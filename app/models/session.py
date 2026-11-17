@@ -18,7 +18,7 @@ from typing import Dict, Any, Tuple, Optional, List
 ARIEL_UNIVERSITY_NAME = "Ariel University"
 ARIEL_UNIVERSITY_LAT = 32.104722
 ARIEL_UNIVERSITY_LNG = 35.209444
-DEFAULT_RADIUS_METERS = 150.0
+DEFAULT_RADIUS_METERS = 500.0
 
 
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:

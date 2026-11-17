@@ -2,7 +2,7 @@
 Attendance Service.
 Encapsulates business rules for dual-factor verification:
 1. Dynamic / Static QR Code token validation.
-2. Geolocation verification via Haversine distance formula (<= 150 meters).
+2. Geolocation verification via Haversine distance formula (<= 500 meters by default, see DEFAULT_RADIUS_METERS).
 Also supports audit logging of remote check-in attempts and automated photo scanning.
 """
 from typing import Dict, Any, List, Optional
@@ -43,7 +43,7 @@ class AttendanceService:
         classroom_name: str,
         classroom_lat: float,
         classroom_lng: float,
-        allowed_radius_meters: float = 150.0,
+        allowed_radius_meters: float = DEFAULT_RADIUS_METERS,
         qr_mode: str = "dynamic",
         qr_rotation_interval_seconds: int = 20
     ) -> Dict[str, Any]:
@@ -105,7 +105,7 @@ class AttendanceService:
         """
         Authoritative server-side verification combining TWO parallel conditions:
         1. QR Token Validity (dynamic time-slotted HMAC prevents screenshot forwarding).
-        2. Geofence range verification (Haversine distance <= 150m from instructor coordinates).
+        2. Geofence range verification (Haversine distance <= allowed radius from instructor coordinates).
         """
         session = self.get_session()
         student = self._datastore.get_student(student_id)
@@ -152,7 +152,7 @@ class AttendanceService:
                 "message": msg
             }
 
-        # 3. Condition 2 Verification: GPS Distance Range (<= 150m)
+        # 3. Condition 2 Verification: GPS Distance Range (<= allowed radius)
         if distance > session.allowed_radius_meters:
             msg = (
                 f"Geofence Range Violation: You are {distance:.1f} meters away from {session.classroom_name}. "

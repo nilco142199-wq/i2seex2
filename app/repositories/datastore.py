@@ -61,7 +61,7 @@ class DataStore:
             student_lng=35.219744,
             distance_meters=1380.5,
             status="rejected_distance",
-            message="Geofence Violation: Student is 1380.5m away (Limit: 150m)",
+            message="Geofence Violation: Student is 1380.5m away (Limit: 500m)",
             timestamp="09:05:12"
         ))
 

@@ -4,7 +4,7 @@
  * 1. Standards-compliant Dynamic / Static QR Code Generation (QREngine).
  * 2. Real-time Live Camera QR Scanner (WebRTC Video + BarcodeDetector API / Html5Qrcode).
  * 3. File upload photo decoder & 1-click screen capture fallback bridges.
- * 4. GPS Geofence Verification via Haversine Distance Formula (<= 150m).
+ * 4. GPS Geofence Verification via Haversine Distance Formula (<= allowed radius, 500m default).
  * 5. Anti-Spoofing Audit Trails (detecting & flagging remote screenshot attempts).
  */
 class AttendanceComponent {
@@ -94,6 +94,11 @@ class AttendanceComponent {
     } catch (err) {
       console.error('Failed to load attendance data:', err);
     }
+  }
+
+  /** Allowed check-in radius in meters (comes from the server session; 500 m default). */
+  radiusM() {
+    return Math.round((this.session && this.session.allowed_radius_meters) || 500);
   }
 
   /** Called by the App every few seconds after fetchData(): keeps the instructor roster live. */
@@ -539,7 +544,7 @@ class AttendanceComponent {
                 </span>
               </div>
               <p class="text-xs text-indigo-200 mt-0.5">
-                Students must satisfy BOTH: (1) Scan dynamic QR code + (2) Device GPS within <strong>150 meters</strong> of classroom.
+                Students must satisfy BOTH: (1) Scan dynamic QR code + (2) Device GPS within <strong>${this.radiusM()} meters</strong> of classroom.
               </p>
             </div>
           </div>
@@ -711,10 +716,10 @@ class AttendanceComponent {
             <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
               <div>
                 <h4 class="font-bold text-slate-800 text-sm">Classroom GPS Base Coordinates</h4>
-                <p class="text-xs text-slate-500">Students must be within 150m of this location to be marked present.</p>
+                <p class="text-xs text-slate-500">Students must be within ${this.radiusM()}m of this location to be marked present.</p>
               </div>
               <span class="px-3 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-bold rounded-full">
-                Allowed Radius: 150m
+                Allowed Radius: ${this.radiusM()}m
               </span>
             </div>
 
@@ -818,7 +823,7 @@ class AttendanceComponent {
                         </td>
                         <td class="py-3.5 px-6">
                           <span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-50 text-indigo-700">
-                            ${s.check_in_method === 'qr_gps' ? 'QR Code + GPS (≤150m)' : s.check_in_method}
+                            ${s.check_in_method === 'qr_gps' ? `QR Code + GPS (≤${this.radiusM()}m)` : s.check_in_method}
                           </span>
                         </td>
                         <td class="py-3.5 px-6 text-right">
@@ -876,7 +881,7 @@ class AttendanceComponent {
             ${this.activeRosterTab === 'breaches' ? `
               <div class="p-4 space-y-3">
                 <div class="text-xs text-slate-500">
-                  Audit log of students who attempted to check in with an active QR code but were <strong>outside the 150-meter geofence</strong>:
+                  Audit log of students who attempted to check in with an active QR code but were <strong>outside the ${this.radiusM()}-meter geofence</strong>:
                 </div>
                 ${breaches.length === 0 ? `
                   <div class="p-8 text-center text-slate-400 text-xs">No geofence violations detected.</div>
@@ -919,7 +924,7 @@ class AttendanceComponent {
     if (!fb) return '';
     const titles = {
       invalid_qr: '⌛ Invalid or expired QR code',
-      distance_exceeded: '📍 Outside the 150 m classroom radius',
+      distance_exceeded: `📍 Outside the ${this.radiusM()} m classroom radius`,
       session_closed: '⏸️ No active session',
       student_not_found: '👤 Student not found',
       missing_qr: '🔳 QR code needed',
@@ -942,7 +947,7 @@ class AttendanceComponent {
         ${hint}
         ${typeof fb.distance_meters === 'number' ? `
           <div class="font-mono text-[11px] opacity-80 pt-1">
-            Measured distance: ${fb.distance_meters.toFixed(1)}m • Limit: ${(fb.allowed_radius_meters || 150).toFixed(0)}m
+            Measured distance: ${fb.distance_meters.toFixed(1)}m • Limit: ${(fb.allowed_radius_meters || this.radiusM()).toFixed(0)}m
           </div>` : ''}
       </div>`;
   }
@@ -954,7 +959,7 @@ class AttendanceComponent {
     const students = this.data.students || [];
     const student = students.find(s => s.student_id === this.state.currentStudentId);
     const isPresent = student ? student.is_present : false;
-    const radius = this.session.allowed_radius_meters || 150;
+    const radius = this.radiusM();
     const gps = this.studentGps;
     const isWithinRange = gps.acquired && gps.distance <= radius;
     const sessionOpen = this.session.is_active !== false;

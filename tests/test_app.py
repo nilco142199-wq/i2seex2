@@ -111,16 +111,16 @@ class TestGeofenceAndQRSession(unittest.TestCase):
         service = AttendanceService()
         token = service.get_current_qr()["token"]
 
-        # 1. Close distance (within 150m) -> SUCCESS
+        # 1. Close distance (within radius) -> SUCCESS
         res_ok = service.verify_qr_gps_checkin("s103", token, 32.104900, 35.209444)
         self.assertTrue(res_ok["success"])
-        self.assertLessEqual(res_ok["distance_meters"], 150.0)
+        self.assertLessEqual(res_ok["distance_meters"], 500.0)
 
-        # 2. Too far away (>150m) -> REJECTED_DISTANCE
+        # 2. Too far away (>500m) -> REJECTED_DISTANCE
         res_far = service.verify_qr_gps_checkin("s108", token, 32.114400, 35.209444)
         self.assertFalse(res_far["success"])
         self.assertEqual(res_far["reason"], "distance_exceeded")
-        self.assertGreater(res_far["distance_meters"], 150.0)
+        self.assertGreater(res_far["distance_meters"], 500.0)
 
         # 3. Invalid QR -> REJECTED_QR
         res_bad_qr = service.verify_qr_gps_checkin("s105", "STALE_TOKEN", 32.104800, 35.209444)
@@ -201,24 +201,24 @@ class TestServicesAndRouter(unittest.TestCase):
 
 
 class TestArielUniversityGeofence(unittest.TestCase):
-    """The default classroom is Ariel University with a 150 m radius."""
+    """The default classroom is Ariel University with a 500 m radius."""
     def test_default_location_and_radius(self):
         session = AttendanceService().get_session()
         self.assertEqual(session.classroom_name, "Ariel University")
         self.assertAlmostEqual(session.classroom_lat, 32.104722, places=5)
         self.assertAlmostEqual(session.classroom_lng, 35.209444, places=5)
-        self.assertEqual(session.allowed_radius_meters, 150.0)
+        self.assertEqual(session.allowed_radius_meters, 500.0)
 
-    def test_boundary_inside_and_outside_150m(self):
+    def test_boundary_inside_and_outside_500m(self):
         service = AttendanceService()
         service.start_session()
         token = service.get_current_qr()["token"]
-        # ~140 m north of campus centre -> accepted
-        ok = service.verify_qr_gps_checkin("s101", token, 32.104722 + 0.00126, 35.209444)
+        # ~490 m north of campus centre -> accepted
+        ok = service.verify_qr_gps_checkin("s101", token, 32.104722 + 0.00440, 35.209444)
         self.assertTrue(ok["success"], ok)
-        self.assertLess(ok["distance_meters"], 150.0)
-        # ~160 m north -> rejected
-        far = service.verify_qr_gps_checkin("s102", token, 32.104722 + 0.00144, 35.209444)
+        self.assertLess(ok["distance_meters"], 500.0)
+        # ~510 m north -> rejected
+        far = service.verify_qr_gps_checkin("s102", token, 32.104722 + 0.00460, 35.209444)
         self.assertFalse(far["success"])
         self.assertEqual(far["reason"], "distance_exceeded")
         # Tel Aviv (old default) -> far outside

@@ -1,5 +1,5 @@
 # 🎓 CS302 Interactive Classroom Suite (Ex2 Assignment)
-> **Dual-Factor Student Attendance (Dynamic QR + 150 m GPS Geofence) & Class Video AI Summarization**
+> **Dual-Factor Student Attendance (Dynamic QR + 500 m GPS Geofence) & Class Video AI Summarization**
 > Pure Python standard-library backend + vanilla JS frontend. **No `pip install`, no `npm install`.**
 
 ---
@@ -125,8 +125,8 @@ Stop the server with **Ctrl + C**. If you see *"Address already in use"*, anothe
 3. **Start the session:** the left card shows the session status.
    - If it says **■ Ended**, click **▶ Start Session**. (Starting resets the attendance list for a new class.)
    - While live, the card shows the status **● Live since HH:MM:SS**.
-4. **Set the classroom location** (the centre of the 150 m circle) in *Classroom GPS Base Coordinates*:
-   - **Default: Ariel University** (`32.104722, 35.209444`, centre of campus near the library) with a **150 m radius** — nothing to configure.
+4. **Set the classroom location** (the centre of the 500 m circle) in *Classroom GPS Base Coordinates*:
+   - **Default: Ariel University** (`32.104722, 35.209444`, centre of campus near the library) with a **500 m radius** — nothing to configure.
    - To use a different point: click **📍 Auto-Fetch My Current GPS Location**, choose a **Campus Preset**, or type latitude/longitude and click **Save Classroom GPS**. Choose the preset **Ariel University** to go back to the default. (Restarting the server also resets to Ariel University.)
 5. **Show the QR code** to the students (projector / second screen). The card displays:
    - a **QR code** that rotates every 20 s (countdown badge `🔄 Rotates in: Xs`),
@@ -135,7 +135,7 @@ Stop the server with **Ctrl + C**. If you see *"Address already in use"*, anothe
 6. **Watch check-ins live:** the roster refreshes automatically every 5 seconds.
    - **✓ Verified Present** — name, time, distance from class, method.
    - **⏳ Not Checked In** — includes a *Mark Present* manual override.
-   - **🚨 Flagged Breaches** — attempts rejected for being outside 150 m.
+   - **🚨 Flagged Breaches** — attempts rejected for being outside 500 m.
    - **📥 Export CSV** downloads the list.
 7. Click **■ End Session** when class is over — from then on, students get *"No active session"*.
 
@@ -158,8 +158,8 @@ Stop the server with **Ctrl + C**. If you see *"Address already in use"*, anothe
 
 | Result | Meaning |
 |---|---|
-| 🎉 **Attendance recorded!** | QR valid **and** you are within 150 m. The instructor's list updates within 5 s. |
-| 📍 **Outside the 150 m classroom radius** | Valid code, but your GPS is too far away (logged as a breach). |
+| 🎉 **Attendance recorded!** | QR valid **and** you are within 500 m. The instructor's list updates within 5 s. |
+| 📍 **Outside the 500 m classroom radius** | Valid code, but your GPS is too far away (logged as a breach). |
 | ⌛ **Invalid or expired QR code** | The code is wrong or older than ~40 s. Scan the current code again. |
 | ⏸️ **No active session** | The instructor hasn't started (or has ended) the session. |
 | 🚫 / 📵 camera or location messages | Permission denied, no camera, camera in use, or page not on HTTPS — the message says how to fix it. |
@@ -172,7 +172,7 @@ Open **🧪 Testing tools** in the student card:
 
 Suggested test run:
 1. 🟢 In class + scan (or Fill current code) → **Verify** → *Attendance recorded*.
-2. Choose another student, 🔴 At home + current code → **Verify** → *Outside the 150 m radius* (appears in the instructor's 🚨 Flagged Breaches).
+2. Choose another student, 🔴 At home + current code → **Verify** → *Outside the 500 m radius* (appears in the instructor's 🚨 Flagged Breaches).
 3. ⚠️ Use expired code → **Verify** → *Invalid or expired QR code*.
 4. Instructor clicks **■ End Session**, student verifies again → *No active session*.
 
@@ -184,14 +184,14 @@ Suggested test run:
 
 1. `brew install cloudflared` (once).
 2. `python3 server.py --tunnel` and wait for the two links.
-3. **Instructor device:** open the *Instructor* link → **📸 Automated Attendance** → **▶ Start Session** if needed. The classroom is already **Ariel University, 150 m radius** — students must physically be on campus within 150 m of `32.104722, 35.209444`.
+3. **Instructor device:** open the *Instructor* link → **📸 Automated Attendance** → **▶ Start Session** if needed. The classroom is already **Ariel University, 500 m radius** — students must physically be on campus within 500 m of `32.104722, 35.209444`.
 4. **Student phone:** scan the QR on the instructor screen with the normal camera app (it opens Student Mode with the code filled in) — or open the *Student* link and tap **📷 Start Camera & Scan QR**.
 5. Pick a name → allow **Camera** and **Location** → **✅ Verify & Check In**.
 6. The instructor's **✓ Verified Present** list updates within 5 seconds.
 
 Same-Wi-Fi alternative without installing anything: see [Option C](#option-c--phones-on-the-same-wi-fi-self-signed-https).
 
-> 💡 **Testing from home?** Your real location is outside the 150 m Ariel University radius, so a real-GPS check-in will correctly be *rejected*. To see a successful check-in off-campus, open **🧪 Testing tools → 🟢 In class (~30 m)** in Student Mode (or temporarily set the classroom to your own location with **📍 Auto-Fetch**, then pick the **Ariel University** preset again).
+> 💡 **Testing from home?** Your real location is outside the 500 m Ariel University radius, so a real-GPS check-in will correctly be *rejected*. To see a successful check-in off-campus, open **🧪 Testing tools → 🟢 In class (~30 m)** in Student Mode (or temporarily set the classroom to your own location with **📍 Auto-Fetch**, then pick the **Ariel University** preset again).
 >
 > Indoor phone GPS can be off by 20–50 m, so a student at the edge of campus may be rejected.
 
@@ -228,20 +228,20 @@ Ran 18 tests in 0.0XXs
 OK
 ```
 
-The tests cover the domain models, Haversine distance, QR rotation and the grace window, deep-link URLs and short codes, session start/end, the 150 m geofence, and the REST router.
+The tests cover the domain models, Haversine distance, QR rotation and the grace window, deep-link URLs and short codes, session start/end, the 500 m geofence, and the REST router.
 
 ---
 
 ## 🌟 System Overview & Architecture
 
 The CS302 Interactive Classroom Suite is an end-to-end web application prototype built for university instruction. It addresses two critical operational challenges:
-1. **Attendance Fraud & Friction**: Eliminates buddy-signing and remote screenshot-sharing by enforcing **Dual-Factor Geofenced Verification** (Dynamic rotating QR code + real-time GPS <= 150m).
+1. **Attendance Fraud & Friction**: Eliminates buddy-signing and remote screenshot-sharing by enforcing **Dual-Factor Geofenced Verification** (Dynamic rotating QR code + real-time GPS <= 500m).
 2. **Lecture Review & Knowledge Extraction**: Enables instructors to upload video recordings of classes and leverages a multi-modal AI pipeline (Whisper ASR + Gemini LLM) to synthesize executive summaries, interactive timeline chapters, and actionable homework tasks.
 
 ```
 +───────────────────────────────────────────────────────────────────────────────+
 |                             INSTRUCTOR INTERFACE                              |
-|  • Classroom Base GPS: Ariel University (32.104722, 35.209444), radius 150 m   |
+|  • Classroom Base GPS: Ariel University (32.104722, 35.209444), radius 500 m   |
 |  • Displays Dynamic QR Code (HMAC-SHA256 Token rotates every 20s)             |
 |  • Uploads Class Video Recording (.mp4, .webm, .mov) for Multi-Modal LLM      |
 |  • Monitors Real-Time Stats: Present, Absent, & Flagged Geofence Breaches    |
@@ -251,7 +251,7 @@ The CS302 Interactive Classroom Suite is an end-to-end web application prototype
 +───────────────────────────────────────────────────────────────────────────────+
 |                        STUDENT INTERFACE (MOBILE-OPTIMIZED)                   |
 |  • Requests Device GPS Permission (navigator.geolocation.getCurrentPosition) |
-|  • Calculates Live Haversine Distance (Live proximity preview: <= 150m)       |
+|  • Calculates Live Haversine Distance (Live proximity preview: <= 500m)       |
 |  • Scans Dynamic QR Code via WebRTC Camera Viewfinder / Photo Upload          |
 |  • Submits Dual-Factor Payload: { student_id, qr_token, lat, lng }           |
 +───────────────────────────────────────┬───────────────────────────────────────+
@@ -264,8 +264,8 @@ The CS302 Interactive Classroom Suite is an end-to-end web application prototype
 |                 ↳ Rejects stale/screenshot tokens older than 40s              |
 |                                                                               |
 |  [Condition 2]: haversine_distance(classroom_lat, classroom_lng, lat, lng)   |
-|                 ↳ Distance <= 150.0 meters?                                   |
-|                 ↳ IF > 150m: Logs attempt as "rejected_distance" & REJECTS    |
+|                 ↳ Distance <= 500.0 meters?                                   |
+|                 ↳ IF > 500m: Logs attempt as "rejected_distance" & REJECTS    |
 |                                                                               |
 |  [Result]: IF BOTH PASS ➔ Student marked PRESENT with exact distance & time  |
 |            IF EITHER FAILS ➔ Returns structured error + distance to student   |
@@ -280,15 +280,16 @@ The CS302 Interactive Classroom Suite is an end-to-end web application prototype
    The page renders a QR (bundled `static/js/vendor/qrcode.min.js`) that contains a **deep link**: `https://<host>/?role=student&token=<token>`.
 2. **Scanning (student):** `getUserMedia` opens the rear camera (falls back to any camera). Every 200 ms a frame is decoded with the native `BarcodeDetector` when the browser has one, otherwise with the bundled `jsQR` (works in every browser, including iOS Safari). The video element is `muted` + `playsinline` so iOS lets it play inline.
 3. **Parsing:** `QREngine.extractToken()` accepts the deep-link URL, a raw token or a typed short code; the server normalises the same way.
-4. **Verification:** the token plus the device's GPS coordinates go to `POST /api/attendance/verify`. The server checks: session open → token valid for the current or previous slot → distance ≤ 150 m.
+4. **Verification:** the token plus the device's GPS coordinates go to `POST /api/attendance/verify`. The server checks: session open → token valid for the current or previous slot → distance ≤ 500 m.
 5. **Live update:** the instructor's view polls every 5 s and the student appears under *Verified Present*.
 
 ---
 
 ## 📐 GPS Distance Calculation (Haversine Formula)
 
-**Geofence:** centre = **Ariel University** `32.104722, 35.209444` (Wikipedia, campus centre / Hecht Library), radius = **150 m**.
-These defaults live in one place — `ARIEL_UNIVERSITY_LAT`, `ARIEL_UNIVERSITY_LNG`, `DEFAULT_RADIUS_METERS` in [`app/models/session.py`](app/models/session.py) — and the server rejects any check-in more than 150 m from that point.
+**Geofence:** centre = **Ariel University** `32.104722, 35.209444` (Wikipedia, campus centre / Hecht Library), radius = **500 m**.
+These defaults live in one place — `ARIEL_UNIVERSITY_LAT`, `ARIEL_UNIVERSITY_LNG`, `DEFAULT_RADIUS_METERS` in [`app/models/session.py`](app/models/session.py) — and the server rejects any check-in more than 500 m from that point.
+To change the radius, edit `DEFAULT_RADIUS_METERS = 500.0` in that file and restart the server — the UI picks up the new value automatically.
 
 The great-circle geodesic distance between the student's device and the classroom coordinates is calculated using the **Haversine formula**:
 
@@ -343,7 +344,7 @@ The system features an automated **Class Video Upload & Multi-Modal AI Summariza
 2. **Short Validity Window**:
    The server only permits tokens belonging to the current slot (or immediate previous slot for network latency tolerance). If an in-class student screenshots the QR and forwards it over WhatsApp, by the time the remote student opens and submits the code, the token has **expired**.
 3. **Mandatory Server Geofencing**:
-   Even if an attacker receives the QR code within seconds, the server computes the Haversine distance from their device GPS. If the distance exceeds **150 meters**, check-in is unconditionally rejected.
+   Even if an attacker receives the QR code within seconds, the server computes the Haversine distance from their device GPS. If the distance exceeds **500 meters**, check-in is unconditionally rejected.
 4. **Short manual code follows the same rules**:
    The 6-character code printed under the QR (for students whose camera fails) is derived from the same HMAC time slot, so it expires exactly like the QR token.
 5. **Audit Trail of Breaches**:
@@ -359,7 +360,7 @@ The system features an automated **Class Video Upload & Multi-Modal AI Summariza
 ├── server.py                      # Multi-threaded zero-dependency HTTP(S) server (--https, --host, --tunnel)
 ├── certs/                         # Auto-generated self-signed HTTPS certificate (git-ignored)
 ├── tests/
-│   └── test_app.py                # 18 unit tests (models, QR codes, Ariel 150 m geofence, API)
+│   └── test_app.py                # 18 unit tests (models, QR codes, Ariel 500 m geofence, API)
 ├── app/
 │   ├── models/                    # Encapsulated Domain Entities
 │   │   ├── session.py             # ClassSession, CheckInAttempt, & Haversine formula
@@ -413,7 +414,7 @@ The system features an automated **Class Video Upload & Multi-Modal AI Summariza
 | `POST` | `/api/session/start` | Instructor starts a session (resets the roster by default, `reset_roster`) |
 | `POST` | `/api/session/end` | Instructor ends the session — further check-ins return `session_closed` |
 | `POST` | `/api/session/location` | Sets classroom GPS coordinates (`lat`, `lng`, `name`) |
-| `POST` | `/api/session/create` | Configures class session, radius (150m), and QR mode |
+| `POST` | `/api/session/create` | Configures class session, radius (500m), and QR mode |
 | `POST` | `/api/attendance/verify` | **Dual-Factor verification** (`student_id`, `qr_token`, `lat`, `lng`). `qr_token` may be the raw token, the QR deep-link URL or the 6-char short code. Failure `reason`: `invalid_qr`, `distance_exceeded`, `session_closed`, `student_not_found`, `missing_gps` |
 | `GET` | `/api/attendance` | Returns student roster, present/absent counts, and breach logs |
 | `GET` | `/api/attendance/stats` | Detailed statistics and audit trail of remote attempts |
