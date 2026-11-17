@@ -1,81 +1,116 @@
 /**
  * QREngine
- * Universal, 100% Offline-Ready QR Generator & Scanner Engine.
- * - Standards-compliant QR rendering powered by local vendor/qrcode.min.js (David Shim)
- * - Rock-solid, universal camera frame decoding powered by local vendor/jsQR.min.js
- * - Hardware-accelerated BarcodeDetector fallback
- * - Web Audio API audio confirmation chime
+ * Offline QR generator + scanner helpers.
+ * - Generation: local vendor/qrcode.min.js (David Shim)
+ * - Decoding: native BarcodeDetector when available, otherwise local vendor/jsQR.min.js
+ * - Payload helpers: the QR encodes a deep link (…/?role=student&token=…) so that a phone's
+ *   built-in camera app can also open Student Mode with the code pre-filled.
  */
 class QREngine {
-  /**
-   * Renders a real, standards-compliant QR code into containerElement.
-   */
-  static renderQR(containerElement, text, size = 200) {
-    if (!containerElement) return;
-    containerElement.innerHTML = '';
+  /** Builds the text that goes inside the QR code. */
+  static isLocalhostPage() {
+    const h = window.location.hostname;
+    return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]';
+  }
 
-    // Primary: Use local QRCode library (David Shim)
-    if (typeof QRCode !== 'undefined') {
-      try {
-        new QRCode(containerElement, {
-          text: text,
-          width: size,
-          height: size,
-          colorDark: '#0f172a',
-          colorLight: '#ffffff',
-          correctLevel: QRCode.CorrectLevel.M
-        });
-        return;
-      } catch (e) {
-        console.warn('QRCode render error:', e);
-      }
-    }
+  /** Address other devices (phones) must use. "localhost" only works on this computer. */
+  static publicOrigin() {
+    if (QREngine.isLocalhostPage() && QREngine.lanOrigin) return QREngine.lanOrigin;
+    return window.location.origin;
+  }
 
-    // Secondary fallback: Built-in SVG matrix
-    if (window.PureQREncoder) {
-      try {
-        const matrix = window.PureQREncoder.encode(text);
-        const n = matrix.length;
-        const cellSize = (size / n).toFixed(2);
-        let rects = '';
-
-        for (let r = 0; r < n; r++) {
-          for (let c = 0; c < n; c++) {
-            if (matrix[r][c]) {
-              const x = (c * cellSize).toFixed(2);
-              const y = (r * cellSize).toFixed(2);
-              rects += `<rect x="${x}" y="${y}" width="${cellSize}" height="${cellSize}" fill="#0f172a" />`;
-            }
-          }
-        }
-
-        containerElement.innerHTML = `
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" class="mx-auto rounded-xl p-2 bg-white shadow-inner">
-            <rect width="${size}" height="${size}" fill="#ffffff" rx="8" />
-            ${rects}
-          </svg>
-        `;
-        return;
-      } catch (err) {
-        console.error('PureQREncoder fallback failed:', err);
-      }
-    }
-
-    containerElement.innerHTML = `<div class="p-4 text-xs text-rose-500">QR Engine not initialized.</div>`;
+  static buildPayload(token) {
+    return `${QREngine.publicOrigin()}/?role=student&token=${encodeURIComponent(token)}`;
   }
 
   /**
-   * Universal QR Decoder: Decodes from HTMLVideoElement, HTMLImageElement, or HTMLCanvasElement.
-   * Uses jsQR (pure CPU pixel decoder) + native BarcodeDetector.
+   * Extracts the attendance token from whatever was scanned or typed:
+   * a deep-link URL, a raw "QR_…" token, or a short 6-character code.
    */
-  static async detectBarcode(sourceElement) {
+  static extractToken(raw) {
+    if (!raw) return '';
+    let value = String(raw).trim();
+    if (/[?&](token|code)=/.test(value)) {
+      try {
+        const url = new URL(value, window.location.origin);
+        value = (url.searchParams.get('token') || url.searchParams.get('code') || value).trim();
+      } catch (e) { /* not a URL – keep raw value */ }
+    }
+    if (/^QR_/i.test(value)) return value;
+    return value.replace(/[\s\-_]/g, '').toUpperCase();
+  }
+
+  /** Renders a standards-compliant QR code into containerElement. */
+  static renderQR(containerElement, text, size = 220) {
+    if (!containerElement) return false;
+    containerElement.innerHTML = '';
+
+    if (typeof QRCode === 'undefined') {
+      containerElement.innerHTML = '<div class="p-4 text-xs text-rose-500">QR library failed to load (static/js/vendor/qrcode.min.js).</div>';
+      return false;
+    }
+
+    try {
+      new QRCode(containerElement, {
+        text,
+        width: size,
+        height: size,
+        colorDark: '#000000',
+        colorLight: '#ffffff',
+        correctLevel: QRCode.CorrectLevel.M
+      });
+      // qrcode.js adds a tooltip with the payload – not needed
+      containerElement.removeAttribute('title');
+      // White quiet-zone border around the code helps phone cameras lock on
+      containerElement.querySelectorAll('img, canvas').forEach(el => {
+        el.style.background = '#fff';
+        el.style.padding = '12px';
+        el.style.borderRadius = '12px';
+      });
+      return true;
+    } catch (e) {
+      console.warn('QRCode render error:', e);
+      containerElement.innerHTML = '<div class="p-4 text-xs text-rose-500">Could not render QR code. Use the short code below.</div>';
+      return false;
+    }
+  }
+
+  static _getCanvas() {
+    if (!QREngine._canvas) {
+      QREngine._canvas = document.createElement('canvas');
+      QREngine._ctx = QREngine._canvas.getContext('2d', { willReadFrequently: true });
+    }
+    return QREngine._canvas;
+  }
+
+  static async _getNativeDetector() {
+    if (QREngine._nativeDetector !== undefined) return QREngine._nativeDetector;
+    QREngine._nativeDetector = null;
+    try {
+      if ('BarcodeDetector' in window) {
+        const formats = await window.BarcodeDetector.getSupportedFormats();
+        if (formats.includes('qr_code')) {
+          QREngine._nativeDetector = new window.BarcodeDetector({ formats: ['qr_code'] });
+        }
+      }
+    } catch (e) {
+      QREngine._nativeDetector = null;
+    }
+    return QREngine._nativeDetector;
+  }
+
+  /**
+   * Decodes a QR code from an HTMLVideoElement, HTMLImageElement or HTMLCanvasElement.
+   * @param {boolean} thorough  try inverted colours too (slower – used for photo uploads)
+   * @returns {Promise<string|null>} raw decoded text
+   */
+  static async detectBarcode(sourceElement, thorough = false) {
     if (!sourceElement) return null;
 
-    // Determine dimensions
     let width = 0, height = 0;
     if (sourceElement instanceof HTMLVideoElement) {
-      width = sourceElement.videoWidth || 640;
-      height = sourceElement.videoHeight || 480;
+      width = sourceElement.videoWidth;
+      height = sourceElement.videoHeight;
     } else if (sourceElement instanceof HTMLImageElement) {
       width = sourceElement.naturalWidth || sourceElement.width;
       height = sourceElement.naturalHeight || sourceElement.height;
@@ -83,66 +118,57 @@ class QREngine {
       width = sourceElement.width;
       height = sourceElement.height;
     }
+    if (!width || !height) return null;
 
-    if (width === 0 || height === 0) return null;
-
-    // Strategy 1: jsQR (100% universal across all browsers on canvas pixel buffer)
-    if (typeof jsQR !== 'undefined') {
+    // Strategy 1: native BarcodeDetector (fast, hardware accelerated – Chrome/Android/Edge)
+    const native = await QREngine._getNativeDetector();
+    if (native) {
       try {
-        const offCanvas = document.createElement('canvas');
-        offCanvas.width = width;
-        offCanvas.height = height;
-        const ctx = offCanvas.getContext('2d', { willReadFrequently: true });
-        ctx.drawImage(sourceElement, 0, 0, width, height);
-
-        const imageData = ctx.getImageData(0, 0, width, height);
-        const code = jsQR(imageData.data, imageData.width, imageData.height, {
-          inversionAttempts: 'dontInvert'
-        });
-
-        if (code && code.data && code.data.trim().length > 0) {
-          return code.data.trim();
-        }
-      } catch (e) {
-        console.warn('jsQR scan error:', e);
-      }
+        const codes = await native.detect(sourceElement);
+        if (codes && codes.length && codes[0].rawValue) return codes[0].rawValue.trim();
+      } catch (e) { /* fall through to jsQR */ }
     }
 
-    // Strategy 2: Native Web BarcodeDetector API (if supported in browser)
-    if ('BarcodeDetector' in window) {
-      try {
-        const detector = new window.BarcodeDetector({ formats: ['qr_code'] });
-        const barcodes = await detector.detect(sourceElement);
-        if (barcodes && barcodes.length > 0) {
-          return barcodes[0].rawValue.trim();
-        }
-      } catch (err) {
-        // Fallback tick
-      }
-    }
+    // Strategy 2: jsQR on a (down-scaled) pixel buffer – works in every browser incl. iOS Safari
+    if (typeof jsQR === 'undefined') return null;
+    const maxSide = 900;
+    const scale = Math.min(1, maxSide / Math.max(width, height));
+    const w = Math.round(width * scale);
+    const h = Math.round(height * scale);
 
+    const canvas = QREngine._getCanvas();
+    if (canvas.width !== w) canvas.width = w;
+    if (canvas.height !== h) canvas.height = h;
+    const ctx = QREngine._ctx;
+    try {
+      ctx.drawImage(sourceElement, 0, 0, w, h);
+      const imageData = ctx.getImageData(0, 0, w, h);
+      const code = jsQR(imageData.data, w, h, {
+        inversionAttempts: thorough ? 'attemptBoth' : 'dontInvert'
+      });
+      if (code && code.data && code.data.trim()) return code.data.trim();
+    } catch (e) {
+      console.warn('jsQR scan error:', e);
+    }
     return null;
   }
 
-  /**
-   * Plays a quick audio beep on successful QR scan.
-   */
+  /** Short confirmation beep after a successful scan. */
   static playSuccessBeep() {
     try {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(880, ctx.currentTime); // A5
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
       gain.gain.setValueAtTime(0.2, ctx.currentTime);
       gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.15);
       osc.connect(gain);
       gain.connect(ctx.destination);
       osc.start();
       osc.stop(ctx.currentTime + 0.15);
-    } catch (e) {
-      // Audio not allowed without user gesture
-    }
+    } catch (e) { /* audio needs a user gesture on some browsers */ }
+    try { if (navigator.vibrate) navigator.vibrate(80); } catch (e) { /* ignore */ }
   }
 }
 

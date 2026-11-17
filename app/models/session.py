@@ -5,10 +5,20 @@ and dynamic time-slotted QR token generation/verification.
 """
 import math
 import time
+import re
+from urllib.parse import urlparse, parse_qs
 import hmac
 import hashlib
 from datetime import datetime
 from typing import Dict, Any, Tuple, Optional, List
+
+
+# Default classroom: Ariel University campus centre (Hecht Library area), Ariel.
+# Source: Wikipedia "Ariel University" – 32°06′17″N 35°12′34″E.
+ARIEL_UNIVERSITY_NAME = "Ariel University"
+ARIEL_UNIVERSITY_LAT = 32.104722
+ARIEL_UNIVERSITY_LNG = 35.209444
+DEFAULT_RADIUS_METERS = 150.0
 
 
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -79,10 +89,10 @@ class ClassSession:
         session_id: str = "cs302_lec08",
         course_name: str = "CS302 - Advanced OOP",
         instructor_name: str = "Prof. Architect",
-        classroom_name: str = "Turing Hall 101",
-        classroom_lat: float = 32.085300,
-        classroom_lng: float = 34.781800,
-        allowed_radius_meters: float = 150.0,
+        classroom_name: str = ARIEL_UNIVERSITY_NAME,
+        classroom_lat: float = ARIEL_UNIVERSITY_LAT,
+        classroom_lng: float = ARIEL_UNIVERSITY_LNG,
+        allowed_radius_meters: float = DEFAULT_RADIUS_METERS,
         qr_mode: str = "dynamic",  # "dynamic" | "static"
         qr_rotation_interval_seconds: int = 20
     ):
@@ -97,6 +107,8 @@ class ClassSession:
         self.qr_rotation_interval = qr_rotation_interval_seconds
         self.created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.is_active = True
+        self.started_at: Optional[str] = datetime.now().strftime("%H:%M:%S")
+        self.ended_at: Optional[str] = None
         self.attempts_log: List[CheckInAttempt] = []
 
     def set_classroom_location(self, lat: float, lng: float, name: Optional[str] = None) -> None:
@@ -117,6 +129,48 @@ class ClassSession:
         msg = f"{self.session_id}:{self.course_name}:{slot}".encode("utf-8")
         sig = hmac.new(self.SECRET_KEY, msg, hashlib.sha256).hexdigest()[:16]
         return f"QR_{self.session_id}_{slot}_{sig}"
+
+    SHORT_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O/1/I confusion
+
+    def generate_short_code_for_slot(self, slot: int) -> str:
+        """Generates a 6-character human-readable code for manual entry (camera fallback)."""
+        msg = f"short:{self.session_id}:{self.course_name}:{slot}".encode("utf-8")
+        digest = hmac.new(self.SECRET_KEY, msg, hashlib.sha256).digest()
+        alphabet = self.SHORT_CODE_ALPHABET
+        return "".join(alphabet[b % len(alphabet)] for b in digest[:6])
+
+    @staticmethod
+    def normalize_token(raw: str) -> str:
+        """
+        Accepts whatever the student's device produced and extracts the token:
+        - a plain token ("QR_cs302_lec08_123_abcd...")
+        - a QR deep-link URL ("https://host/?role=student&token=QR_...")
+        - a short manual code, with spaces/dashes/lower-case ("abc-def")
+        """
+        if not raw:
+            return ""
+        value = str(raw).strip()
+        if "token=" in value or "code=" in value:
+            try:
+                query = parse_qs(urlparse(value).query)
+                value = (query.get("token") or query.get("code") or [value])[0].strip()
+            except Exception:
+                pass
+        if value.upper().startswith("QR_"):
+            return value
+        # Short manual code: drop separators, upper-case
+        return re.sub(r"[\s\-_]", "", value).upper()
+
+    def start(self) -> None:
+        """Opens the session for check-ins."""
+        self.is_active = True
+        self.started_at = datetime.now().strftime("%H:%M:%S")
+        self.ended_at = None
+
+    def end(self) -> None:
+        """Closes the session: no more check-ins are accepted."""
+        self.is_active = False
+        self.ended_at = datetime.now().strftime("%H:%M:%S")
 
     def get_current_qr_info(self) -> Dict[str, Any]:
         """
@@ -141,6 +195,8 @@ class ClassSession:
             "allowed_radius_meters": self.allowed_radius_meters,
             "qr_mode": self.qr_mode,
             "token": token,
+            "short_code": self.generate_short_code_for_slot(slot),
+            "is_active": self.is_active,
             "slot": slot,
             "seconds_remaining": seconds_remaining,
             "rotation_interval": self.qr_rotation_interval
@@ -151,19 +207,22 @@ class ClassSession:
         Validates token against current slot and previous slot (anti-latency grace window).
         Prevents screenshot replay attacks by ensuring tokens older than 40s are rejected.
         """
+        token = self.normalize_token(token)
         if not token:
             return False
 
         if self.qr_mode == "static":
-            return token == self.generate_token_for_slot(0)
+            slots = [0]
+        else:
+            current_slot = self.get_time_window_slot()
+            # Accept current slot or 1 previous slot (tolerates scan flight latency)
+            slots = [current_slot, current_slot - 1]
 
-        current_slot = self.get_time_window_slot()
-        # Accept current slot or 1 previous slot (tolerates scan flight latency)
-        valid_tokens = [
-            self.generate_token_for_slot(current_slot),
-            self.generate_token_for_slot(current_slot - 1)
-        ]
-        return token in valid_tokens
+        valid = set()
+        for slot in slots:
+            valid.add(self.generate_token_for_slot(slot))
+            valid.add(self.generate_short_code_for_slot(slot))
+        return token in valid
 
     def calculate_distance(self, student_lat: float, student_lng: float) -> float:
         """Calculates distance in meters between student and classroom base location."""
@@ -187,6 +246,8 @@ class ClassSession:
             "allowed_radius_meters": self.allowed_radius_meters,
             "qr_mode": self.qr_mode,
             "is_active": self.is_active,
+            "started_at": self.started_at,
+            "ended_at": self.ended_at,
             "created_at": self.created_at,
             "qr_info": qr_info,
             "recent_attempts": [a.to_dict() for a in self.attempts_log[:15]]

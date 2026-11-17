@@ -45,6 +45,20 @@ class ApiClient {
     return this.request('/api/session/qr');
   }
 
+  static async startSession(resetRoster = true) {
+    return this.request('/api/session/start', {
+      method: 'POST',
+      body: JSON.stringify({ reset_roster: resetRoster })
+    });
+  }
+
+  static async endSession() {
+    return this.request('/api/session/end', {
+      method: 'POST',
+      body: JSON.stringify({})
+    });
+  }
+
   static async updateSessionLocation(lat, lng, name = null) {
     return this.request('/api/session/location', {
       method: 'POST',

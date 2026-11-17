@@ -7,6 +7,7 @@ import json
 from urllib.parse import urlparse, parse_qs
 from typing import Dict, Any, Tuple
 from app.services.attendance_service import AttendanceService
+from app.models.session import ARIEL_UNIVERSITY_NAME, ARIEL_UNIVERSITY_LAT, ARIEL_UNIVERSITY_LNG, DEFAULT_RADIUS_METERS
 from app.services.feedback_service import FeedbackService
 from app.services.poll_service import PollService
 from app.services.ml_summary_service import MLSummaryService
@@ -123,22 +124,35 @@ class ApiRouter:
             lat = data.get("lat")
             lng = data.get("lng")
             if lat is None or lng is None:
-                return 400, {"success": False, "message": "GPS coordinates (lat, lng) are required for verification."}
-            res = self._attendance_service.verify_qr_gps_checkin(student_id, qr_token, float(lat), float(lng))
+                return 400, {"success": False, "reason": "missing_gps", "message": "GPS coordinates (lat, lng) are required for verification."}
+            try:
+                lat, lng = float(lat), float(lng)
+            except (TypeError, ValueError):
+                return 400, {"success": False, "reason": "missing_gps", "message": "GPS coordinates must be numbers."}
+            if not student_id:
+                return 400, {"success": False, "reason": "student_not_found", "message": "Please select your student profile first."}
+            res = self._attendance_service.verify_qr_gps_checkin(student_id, qr_token, lat, lng)
             # Return 200 with result so client receives clear structured verification feedback
             return 200, res
 
         elif path == "/api/session/create":
             res = self._attendance_service.create_or_update_session(
                 course_name=data.get("course_name", "CS302 - Advanced OOP"),
-                classroom_name=data.get("classroom_name", "Turing Hall 101"),
-                classroom_lat=data.get("classroom_lat", 32.085300),
-                classroom_lng=data.get("classroom_lng", 34.781800),
-                allowed_radius_meters=data.get("allowed_radius_meters", 150.0),
+                classroom_name=data.get("classroom_name", ARIEL_UNIVERSITY_NAME),
+                classroom_lat=data.get("classroom_lat", ARIEL_UNIVERSITY_LAT),
+                classroom_lng=data.get("classroom_lng", ARIEL_UNIVERSITY_LNG),
+                allowed_radius_meters=data.get("allowed_radius_meters", DEFAULT_RADIUS_METERS),
                 qr_mode=data.get("qr_mode", "dynamic"),
                 qr_rotation_interval_seconds=data.get("qr_rotation_interval_seconds", 20)
             )
             return 200, {"success": True, "session": res}
+
+        elif path == "/api/session/start":
+            res = self._attendance_service.start_session(reset_roster=bool(data.get("reset_roster", True)))
+            return 200, res
+
+        elif path == "/api/session/end":
+            return 200, self._attendance_service.end_session()
 
         elif path == "/api/session/location":
             lat = data.get("lat")

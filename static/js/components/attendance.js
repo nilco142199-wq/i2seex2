@@ -20,9 +20,13 @@ class AttendanceComponent {
     this.currentQrCountdown = 20;
 
     // Student UI State
-    this.studentGps = { lat: 32.085570, lng: 34.781800, acquired: false, isSimulated: false, distance: 30.0 };
+    // GPS starts EMPTY – a real (or explicitly simulated) position is required before check-in
+    this.studentGps = { lat: null, lng: null, acquired: false, isSimulated: false, distance: null, status: null };
     this.scannedQrToken = '';
     this.verificationFeedback = null;
+    this.scanStatus = null;   // { type: 'info'|'success'|'error', message }
+    this.submitting = false;
+    this.scanBusy = false;
 
     // Live Camera Scanner State
     this.cameraActive = false;
@@ -42,6 +46,25 @@ class AttendanceComponent {
       this.verificationFeedback = null;
       this.render();
     });
+    this.state.subscribe('tab', (tab) => {
+      if (tab !== 'attendance' && this.cameraActive) {
+        this.stopCameraScanner();
+        this.render();
+      }
+    });
+
+    // Opened from the QR deep link with the phone's native camera app
+    if (this.state.pendingQrToken) {
+      this.scannedQrToken = QREngine.extractToken(this.state.pendingQrToken);
+      this.state.pendingQrToken = '';
+      this.scanStatus = { type: 'success', message: '✅ Code received from the QR link. Select your name, then press "Verify & Check In".' };
+    }
+
+    // Learn the LAN address so the QR works on phones even if this page is on localhost
+    try {
+      const info = await ApiClient.request('/api/server-info');
+      QREngine.lanOrigin = info.lan_origin || null;
+    } catch (e) { QREngine.lanOrigin = null; }
 
     await this.fetchData();
     this.startQrAutoRefresh();
@@ -60,7 +83,7 @@ class AttendanceComponent {
       this.currentQrCountdown = qrRes.seconds_remaining || 20;
 
       // Update student distance if coords available
-      if (this.session && this.studentGps.lat) {
+      if (this.session && this.studentGps.acquired) {
         this.studentGps.distance = calculateHaversineDistance(
           this.session.classroom_lat,
           this.session.classroom_lng,
@@ -73,11 +96,19 @@ class AttendanceComponent {
     }
   }
 
+  /** Called by the App every few seconds after fetchData(): keeps the instructor roster live. */
+  onBackgroundRefresh() {
+    if (this.state.currentRole !== 'lecturer') return; // never disturb the student's camera
+    const active = document.activeElement;
+    if (active && this.container.contains(active) && /INPUT|SELECT|TEXTAREA/.test(active.tagName)) return;
+    this.render();
+  }
+
   startQrAutoRefresh() {
     if (this.countdownTimer) clearInterval(this.countdownTimer);
 
     this.countdownTimer = setInterval(async () => {
-      if (this.session && this.session.qr_mode === 'dynamic') {
+      if (this.session && this.session.qr_mode === 'dynamic' && this.session.is_active !== false) {
         this.currentQrCountdown--;
         if (this.currentQrCountdown <= 0) {
           try {
@@ -98,11 +129,15 @@ class AttendanceComponent {
   updateQrDisplayOnly() {
     const qrContainer = this.container ? this.container.querySelector('#qr-code-display') : null;
     const tokenLabel = this.container ? this.container.querySelector('#qr-token-label') : null;
+    const shortCode = this.container ? this.container.querySelector('#qr-short-code') : null;
     if (qrContainer && this.qrInfo) {
-      QREngine.renderQR(qrContainer, this.qrInfo.token, 200);
+      QREngine.renderQR(qrContainer, QREngine.buildPayload(this.qrInfo.token), 240);
     }
     if (tokenLabel && this.qrInfo) {
       tokenLabel.textContent = this.qrInfo.token;
+    }
+    if (shortCode && this.qrInfo) {
+      shortCode.textContent = this.qrInfo.short_code || '';
     }
     this.updateCountdownBadgeOnly();
   }
@@ -117,62 +152,127 @@ class AttendanceComponent {
   // ==========================================
   // CAMERA SCANNER MANAGEMENT
   // ==========================================
+  setScanStatus(type, message) {
+    // type: 'info' | 'success' | 'error'
+    this.scanStatus = message ? { type, message } : null;
+    const box = this.container ? this.container.querySelector('#scan-status-box') : null;
+    if (box) box.outerHTML = this.renderScanStatus();
+  }
+
+  getVideoEl() {
+    return this.container ? this.container.querySelector('#camera-scanner-video') : null;
+  }
+
   async startCameraScanner() {
-    this.cameraActive = true;
-    this.render(); // Mounts the video container
+    this.verificationFeedback = null;
 
-    const videoEl = this.container.querySelector('#camera-scanner-video');
-    const statusMsg = this.container.querySelector('#camera-scanner-status');
-
+    // Camera access only works on https:// or http://localhost
+    if (!window.isSecureContext) {
+      this.setScanStatus('error',
+        `📵 Camera blocked: this page is opened over plain http (${window.location.host}). ` +
+        'Browsers only allow the camera on https:// or on localhost. Restart the server with ' +
+        '"python3 server.py --https --host 0.0.0.0" and open the https:// address, or type the code manually below.');
+      return;
+    }
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      alert('Camera access is not supported in this browser. Please use the Fast Capture button or File Upload.');
-      this.cameraActive = false;
+      this.setScanStatus('error', '📵 This browser does not support camera access. Type the 6-character code shown under the QR code instead.');
+      return;
+    }
+
+    this.cameraActive = true;
+    this.scanStatus = { type: 'info', message: '📷 Requesting camera permission…' };
+    this.render(); // mounts the <video> element
+
+    const attempts = [
+      { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
+      { video: true, audio: false } // desktop webcams / devices that reject constraints
+    ];
+
+    let stream = null;
+    let lastError = null;
+    for (const constraints of attempts) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+        break;
+      } catch (err) {
+        lastError = err;
+        if (err && (err.name === 'NotAllowedError' || err.name === 'SecurityError')) break;
+      }
+    }
+
+    if (!stream) {
+      this.stopCameraScanner();
+      this.scanStatus = { type: 'error', message: this.describeCameraError(lastError) };
       this.render();
       return;
     }
 
-    try {
-      this.cameraStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } }
-      });
+    // User may have pressed "Stop" while the permission prompt was open
+    if (!this.cameraActive) {
+      stream.getTracks().forEach(t => t.stop());
+      return;
+    }
 
-      if (videoEl) {
-        videoEl.srcObject = this.cameraStream;
-        await videoEl.play();
-        if (statusMsg) statusMsg.textContent = 'Scanning... Center the QR code in the viewfinder.';
+    this.cameraStream = stream;
+    await this.attachStreamToVideo();
+    this.setScanStatus('info', '🔍 Scanning… point the camera at the QR code on the instructor\'s screen.');
+    this.startScanLoop();
+  }
 
-        // Start frame scanning loop
-        this.startScanLoop(videoEl);
-      }
-    } catch (err) {
-      console.warn('Camera permission denied or camera error:', err);
-      alert('Camera Notice: ' + err.message + '\n\nTip: You can use the "⚡ Fast Capture Live QR" button or "📁 Upload Image" to test instantly without a webcam.');
-      this.stopCameraScanner();
-      this.render();
+  describeCameraError(err) {
+    const name = err ? err.name : '';
+    switch (name) {
+      case 'NotAllowedError':
+      case 'SecurityError':
+        return '🚫 Camera permission denied. Allow camera access for this site (tap the 🔒/ⓘ icon in the address bar → Camera → Allow), then press "Start Camera" again — or type the code manually below.';
+      case 'NotFoundError':
+      case 'OverconstrainedError':
+        return '📷 No camera was found on this device. Type the 6-character code shown under the QR code instead.';
+      case 'NotReadableError':
+      case 'AbortError':
+        return '📷 The camera is being used by another app or tab (Zoom, Teams, another browser tab…). Close it and try again.';
+      default:
+        return '📷 Could not start the camera' + (err && err.message ? `: ${err.message}` : '.') + ' You can type the code manually below.';
     }
   }
 
-  startScanLoop(videoEl) {
+  /** (Re)attaches the live stream to the current <video> element – survives re-renders. */
+  async attachStreamToVideo() {
+    const videoEl = this.getVideoEl();
+    if (!videoEl || !this.cameraStream) return;
+    if (videoEl.srcObject !== this.cameraStream) {
+      videoEl.muted = true;              // required for autoplay on iOS
+      videoEl.setAttribute('playsinline', ''); // keep iOS from going full-screen
+      videoEl.srcObject = this.cameraStream;
+    }
+    try {
+      await videoEl.play();
+    } catch (e) {
+      console.warn('Video play() was interrupted:', e);
+    }
+  }
+
+  startScanLoop() {
     if (this.scannerLoopTimer) clearInterval(this.scannerLoopTimer);
+    this.scanBusy = false;
 
     this.scannerLoopTimer = setInterval(async () => {
-      if (!this.cameraActive || !videoEl || videoEl.readyState < 2) return;
+      if (!this.cameraActive || this.scanBusy) return;
+      const videoEl = this.getVideoEl();
+      if (!videoEl || videoEl.readyState < 2 || !videoEl.videoWidth) return;
 
+      this.scanBusy = true;
       try {
         const decodedText = await QREngine.detectBarcode(videoEl);
-        if (decodedText) {
-          console.log('✅ QR Code Decoded successfully:', decodedText);
-          QREngine.playSuccessBeep();
-          this.scannedQrToken = decodedText.trim();
-          this.stopCameraScanner();
-
-          // Immediately trigger verification
-          await this.handleSubmitVerification();
+        if (decodedText && this.cameraActive) {
+          await this.onQrDecoded(decodedText, 'camera');
         }
       } catch (err) {
-        // Frame analysis tick
+        // ignore single-frame errors
+      } finally {
+        this.scanBusy = false;
       }
-    }, 250);
+    }, 200);
   }
 
   stopCameraScanner() {
@@ -184,31 +284,56 @@ class AttendanceComponent {
       this.cameraStream.getTracks().forEach(track => track.stop());
       this.cameraStream = null;
     }
+    const videoEl = this.getVideoEl();
+    if (videoEl) videoEl.srcObject = null;
     this.cameraActive = false;
+    this.scanBusy = false;
+  }
+
+  /** Called once a QR code (camera / photo) has been decoded. */
+  async onQrDecoded(rawText, source) {
+    const token = QREngine.extractToken(rawText);
+    if (!token) {
+      this.setScanStatus('error', '⚠️ That QR code does not contain an attendance code.');
+      return;
+    }
+    console.log(`✅ QR decoded via ${source}:`, rawText);
+    QREngine.playSuccessBeep();
+    this.stopCameraScanner();
+    this.scannedQrToken = token;
+    this.scanStatus = { type: 'success', message: '✅ QR code scanned. Verifying your location…' };
+    this.render();
+
+    if (!this.studentGps.acquired) {
+      const ok = await this.handleAcquireStudentGPS();
+      if (!ok) return; // GPS error is already displayed
+    }
+    await this.handleSubmitVerification();
   }
 
   // Handle Photo File Upload Scanning
   async handleFileUploadScan(file) {
     if (!file) return;
-    try {
-      const img = new Image();
-      img.onload = async () => {
-        const decoded = await QREngine.detectBarcode(img);
+    this.setScanStatus('info', '🖼️ Reading photo…');
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = async () => {
+      try {
+        const decoded = await QREngine.detectBarcode(img, true);
         if (decoded) {
-          QREngine.playSuccessBeep();
-          this.scannedQrToken = decoded.trim();
-          alert('✅ QR code decoded from image:\n' + this.scannedQrToken);
-          this.render();
-          await this.handleSubmitVerification();
+          await this.onQrDecoded(decoded, 'photo');
         } else {
-          // If native barcode detector couldn't find it, offer to populate active token
-          alert('Could not decode QR code from the uploaded image. Make sure the code is well-lit and not blurry, or use "⚡ Fast Capture".');
+          this.setScanStatus('error', '⚠️ No QR code found in that photo. Make sure the whole code is visible, sharp and well-lit — or type the code manually.');
         }
-      };
-      img.src = URL.createObjectURL(file);
-    } catch (err) {
-      alert('Error reading image: ' + err.message);
-    }
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      this.setScanStatus('error', '⚠️ Could not open that image file.');
+    };
+    img.src = url;
   }
 
   // ==========================================
@@ -243,6 +368,28 @@ class AttendanceComponent {
     );
   }
 
+  async handleStartSession() {
+    try {
+      await ApiClient.startSession();
+      await this.fetchData();
+      this.activeRosterTab = 'present';
+      this.render();
+    } catch (err) {
+      alert('Could not start the session: ' + err.message);
+    }
+  }
+
+  async handleEndSession() {
+    if (!confirm('End this session? Students will no longer be able to check in.')) return;
+    try {
+      await ApiClient.endSession();
+      await this.fetchData();
+      this.render();
+    } catch (err) {
+      alert('Could not end the session: ' + err.message);
+    }
+  }
+
   async handleToggleQrMode(newMode) {
     try {
       await ApiClient.createSession({
@@ -259,29 +406,49 @@ class AttendanceComponent {
   // ==========================================
   // STUDENT HANDLERS
   // ==========================================
+  /** Acquires the device GPS position. Resolves true on success. */
   handleAcquireStudentGPS() {
-    if (!navigator.geolocation) {
-      alert('Geolocation is not supported by your browser.');
-      return;
-    }
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const lat = parseFloat(pos.coords.latitude.toFixed(6));
-        const lng = parseFloat(pos.coords.longitude.toFixed(6));
-        const dist = calculateHaversineDistance(
-          this.session.classroom_lat,
-          this.session.classroom_lng,
-          lat,
-          lng
-        );
-        this.studentGps = { lat, lng, acquired: true, isSimulated: false, distance: dist };
+    return new Promise((resolve) => {
+      const fail = (msg) => {
+        this.studentGps = { ...this.studentGps, status: { type: 'error', message: msg } };
         this.render();
-      },
-      (err) => {
-        alert('GPS Access Notice: ' + err.message + '. You can use the Quick Simulation buttons below to test in-class vs remote locations.');
-      },
-      { enableHighAccuracy: true, timeout: 8000 }
-    );
+        resolve(false);
+      };
+
+      if (!window.isSecureContext) {
+        return fail('📍 Location is blocked because the page is opened over plain http. Use https:// (server --https) or localhost — or use the testing simulators below.');
+      }
+      if (!navigator.geolocation) {
+        return fail('📍 This browser does not support geolocation. Use the testing simulators below.');
+      }
+
+      this.studentGps = { ...this.studentGps, status: { type: 'info', message: '📡 Getting your location… (allow the location prompt)' } };
+      this.render();
+
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const lat = parseFloat(pos.coords.latitude.toFixed(6));
+          const lng = parseFloat(pos.coords.longitude.toFixed(6));
+          const dist = calculateHaversineDistance(this.session.classroom_lat, this.session.classroom_lng, lat, lng);
+          const accuracy = Math.round(pos.coords.accuracy || 0);
+          this.studentGps = {
+            lat, lng, acquired: true, isSimulated: false, distance: dist, accuracy,
+            status: { type: 'success', message: `📍 Location acquired (±${accuracy}m accuracy).` }
+          };
+          this.render();
+          resolve(true);
+        },
+        (err) => {
+          const messages = {
+            1: '🚫 Location permission denied. Allow location access for this site (🔒/ⓘ icon in the address bar → Location → Allow) and try again.',
+            2: '📍 Your position is unavailable. Turn on Location Services / Wi-Fi and try again.',
+            3: '⏱️ Getting your location timed out. Move near a window or try again.'
+          };
+          fail(messages[err.code] || ('📍 Could not get location: ' + err.message));
+        },
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+      );
+    });
   }
 
   handleSimulateStudentGPS(isNear) {
@@ -289,32 +456,37 @@ class AttendanceComponent {
     const baseLat = this.session.classroom_lat;
     const baseLng = this.session.classroom_lng;
 
-    if (isNear) {
-      // Offset by ~0.00025 degrees (~28 meters)
-      const lat = parseFloat((baseLat + 0.00025).toFixed(6));
-      const lng = parseFloat((baseLng).toFixed(6));
-      const dist = calculateHaversineDistance(baseLat, baseLng, lat, lng);
-      this.studentGps = { lat, lng, acquired: true, isSimulated: true, distance: dist };
-    } else {
-      // Offset by ~0.00800 degrees (~890 meters away)
-      const lat = parseFloat((baseLat + 0.00800).toFixed(6));
-      const lng = parseFloat((baseLng + 0.00200).toFixed(6));
-      const dist = calculateHaversineDistance(baseLat, baseLng, lat, lng);
-      this.studentGps = { lat, lng, acquired: true, isSimulated: true, distance: dist };
-    }
+    // ~28 m north of the classroom, or ~900 m away
+    const lat = parseFloat((baseLat + (isNear ? 0.00025 : 0.008)).toFixed(6));
+    const lng = parseFloat((baseLng + (isNear ? 0 : 0.002)).toFixed(6));
+    const dist = calculateHaversineDistance(baseLat, baseLng, lat, lng);
+    this.studentGps = {
+      lat, lng, acquired: true, isSimulated: true, distance: dist,
+      status: { type: 'info', message: `🧪 Simulated location: ${isNear ? 'inside the classroom' : 'at home'} (${dist.toFixed(0)}m).` }
+    };
     this.render();
   }
 
   async handleSubmitVerification() {
+    const input = this.container ? this.container.querySelector('#input-student-qr-token') : null;
+    if (input && input.value.trim()) this.scannedQrToken = QREngine.extractToken(input.value);
+
     if (!this.scannedQrToken) {
-      alert('Please scan or capture the QR code first.');
+      this.verificationFeedback = { success: false, reason: 'missing_qr', message: 'Scan the QR code first, or type the 6-character code shown under it.' };
+      this.render();
       return;
     }
-    if (!this.studentGps.lat || !this.studentGps.lng) {
-      alert('Device GPS location is required. Click "Acquire GPS Location" or select a simulation preset.');
-      return;
+    if (!this.studentGps.acquired) {
+      const ok = await this.handleAcquireStudentGPS();
+      if (!ok) {
+        this.verificationFeedback = { success: false, reason: 'missing_gps', message: 'Your location is required to check in. Allow location access (or use a simulator while testing) and press Verify again.' };
+        this.render();
+        return;
+      }
     }
 
+    this.submitting = true;
+    this.render();
     try {
       const res = await ApiClient.verifyAttendance({
         studentId: this.state.currentStudentId,
@@ -323,14 +495,20 @@ class AttendanceComponent {
         lng: this.studentGps.lng
       });
       this.verificationFeedback = res;
+      if (res.success) {
+        this.scanStatus = null;
+      } else if (res.reason === 'invalid_qr') {
+        this.scannedQrToken = ''; // force a fresh scan
+      }
       await this.fetchData();
-      this.render();
     } catch (err) {
       this.verificationFeedback = {
         success: false,
         reason: 'network_error',
-        message: 'Verification request failed: ' + err.message
+        message: 'Could not reach the server: ' + err.message + '. Check that the server is running and that you are on the same Wi-Fi.'
       };
+    } finally {
+      this.submitting = false;
       this.render();
     }
   }
@@ -383,9 +561,29 @@ class AttendanceComponent {
     if (isLecturer) {
       const qrBox = this.container.querySelector('#qr-code-display');
       if (qrBox && this.qrInfo) {
-        QREngine.renderQR(qrBox, this.qrInfo.token, 200);
+        QREngine.renderQR(qrBox, QREngine.buildPayload(this.qrInfo.token), 240);
       }
+    } else if (this.cameraActive && this.cameraStream) {
+      // The <video> element was re-created by this render – re-attach the live camera
+      this.attachStreamToVideo();
     }
+  }
+
+  /** Tells the instructor which address phones must open (localhost does not work on a phone). */
+  renderPhoneAccessHint() {
+    const studentUrl = `${QREngine.publicOrigin()}/?role=student`;
+    if (QREngine.isLocalhostPage() && !QREngine.lanOrigin) {
+      return `
+        <div class="text-left text-[11px] p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 leading-relaxed">
+          ⚠️ <strong>Phones can't open this QR yet.</strong> This page runs on <code>localhost</code>, which only exists on this computer.
+          Stop the server and run <code class="font-mono">python3 server.py --https --host 0.0.0.0</code>, then reload.
+        </div>`;
+    }
+    return `
+      <div class="text-left text-[11px] p-3 rounded-xl bg-slate-50 border border-slate-200 text-slate-600 leading-relaxed">
+        📱 Students open: <span class="font-mono font-bold text-slate-900 break-all select-all">${studentUrl}</span>
+        ${window.location.protocol === 'http:' && !QREngine.isLocalhostPage() ? '<br>⚠️ Plain http: phones will block the camera/GPS — use <code>--https</code>.' : ''}
+      </div>`;
   }
 
   /**
@@ -397,6 +595,7 @@ class AttendanceComponent {
     const absentCount = this.data.absent_count;
     const totalEnrolled = this.data.total_enrolled;
     const rate = this.data.attendance_rate;
+    const sessionOpen = this.session.is_active !== false;
 
     return `
       <!-- Top Metrics Counters -->
@@ -423,28 +622,66 @@ class AttendanceComponent {
 
       <!-- Main Instructor Grid: QR Generator & Geofence Settings -->
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <!-- Left: Dynamic QR Code Display -->
+        <!-- Left: Session control + QR Code Display -->
         <div class="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm space-y-4 text-center">
           <div class="flex items-center justify-between">
-            <h4 class="font-bold text-slate-800 text-sm">Classroom QR Code</h4>
-            <span id="qr-countdown-badge" class="px-2.5 py-1 rounded-full text-[11px] font-bold ${
-              this.session.qr_mode === 'dynamic' ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' : 'bg-slate-100 text-slate-600'
+            <h4 class="font-bold text-slate-800 text-sm">Class Session</h4>
+            <span class="px-2.5 py-1 rounded-full text-[11px] font-bold ${
+              sessionOpen ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-slate-100 text-slate-600 border border-slate-200'
             }">
-              ${this.session.qr_mode === 'dynamic' ? `🔄 Rotates in: ${this.currentQrCountdown}s` : 'Static QR Mode'}
+              ${sessionOpen ? `● Live since ${this.session.started_at || ''}` : `■ Ended ${this.session.ended_at || ''}`}
             </span>
           </div>
 
-          <!-- Real Scannable QR Code Canvas / SVG -->
-          <div id="qr-code-display" class="py-2 flex items-center justify-center min-h-[220px]">
-            <div class="text-xs text-slate-400">Rendering authentic QR Code...</div>
-          </div>
-
-          <div class="space-y-1 text-xs">
-            <div class="text-slate-400">Active Token Payload:</div>
-            <div id="qr-token-label" class="font-mono text-[11px] bg-slate-50 py-1.5 px-2 rounded-lg border border-slate-200 text-slate-700 select-all truncate">
-              ${this.qrInfo ? this.qrInfo.token : ''}
+          ${sessionOpen ? `
+            <div class="flex items-center justify-between text-xs">
+              <span class="text-slate-500">Students scan this code:</span>
+              <span id="qr-countdown-badge" class="px-2.5 py-1 rounded-full text-[11px] font-bold ${
+                this.session.qr_mode === 'dynamic' ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' : 'bg-slate-100 text-slate-600'
+              }">
+                ${this.session.qr_mode === 'dynamic' ? `🔄 Rotates in: ${this.currentQrCountdown}s` : 'Static QR Mode'}
+              </span>
             </div>
-          </div>
+
+            <!-- Real Scannable QR Code -->
+            <div id="qr-code-display" class="py-2 flex items-center justify-center min-h-[260px]">
+              <div class="text-xs text-slate-400">Rendering QR code…</div>
+            </div>
+
+            <div class="space-y-1">
+              <div class="text-[11px] text-slate-400">Or type this code in Student Mode:</div>
+              <div id="qr-short-code" class="font-mono text-3xl font-extrabold tracking-[0.3em] text-slate-900 select-all">
+                ${this.qrInfo ? this.qrInfo.short_code || '' : ''}
+              </div>
+            </div>
+
+            ${this.renderPhoneAccessHint()}
+
+            <details class="text-left text-[11px] text-slate-500">
+              <summary class="cursor-pointer font-semibold">Token details</summary>
+              <div id="qr-token-label" class="mt-1 font-mono text-[10px] bg-slate-50 py-1.5 px-2 rounded-lg border border-slate-200 text-slate-700 select-all break-all">
+                ${this.qrInfo ? this.qrInfo.token : ''}
+              </div>
+            </details>
+
+            <div class="grid grid-cols-2 gap-2 text-xs">
+              <a href="/?role=student" target="_blank" rel="noopener" class="py-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-semibold">
+                ↗ Open Student Mode
+              </a>
+              <button id="btn-end-session" class="py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-semibold">
+                ■ End Session
+              </button>
+            </div>
+          ` : `
+            <div class="py-10 space-y-3">
+              <div class="text-4xl">⏸️</div>
+              <p class="text-xs text-slate-500">No session is running, so no QR code is shown and student check-ins are rejected.</p>
+              <button id="btn-start-session" class="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-sm">
+                ▶ Start Session
+              </button>
+              <p class="text-[11px] text-slate-400">Starting a session resets the attendance list for a new class.</p>
+            </div>
+          `}
 
           <!-- QR Rotation Mode Controls -->
           <div class="pt-2 border-t border-slate-100 flex items-center justify-between text-xs">
@@ -463,7 +700,7 @@ class AttendanceComponent {
             </div>
           </div>
           <p class="text-[11px] text-slate-400 text-left">
-            💡 Dynamic QR rotates cryptographic HMAC tokens every 20s so remote students receiving a screenshot cannot check in.
+            💡 Dynamic mode rotates the HMAC token every 20s (codes stay valid ~40s) so a forwarded screenshot quickly stops working.
           </p>
         </div>
 
@@ -504,7 +741,7 @@ class AttendanceComponent {
                 </button>
                 <select id="select-campus-preset" class="text-xs bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 font-medium text-slate-700">
                   <option value="">Campus Presets...</option>
-                  <option value="32.085300,34.781800,Turing Hall 101 (Tel Aviv)">Turing Hall 101 (32.0853, 34.7818)</option>
+                  <option value="32.104722,35.209444,Ariel University">Ariel University (32.1047, 35.2094)</option>
                   <option value="32.113300,34.804300,Ada Lovelace Auditorium (TAU)">Ada Lovelace Auditorium (32.1133, 34.8043)</option>
                   <option value="32.777000,35.021600,Software Lab 3 (Technion)">Software Lab 3 (32.7770, 35.0216)</option>
                 </select>
@@ -667,175 +904,184 @@ class AttendanceComponent {
     `;
   }
 
+  renderScanStatus() {
+    if (!this.scanStatus) return '<div id="scan-status-box" class="hidden"></div>';
+    const styles = {
+      info: 'bg-indigo-50 border-indigo-200 text-indigo-900',
+      success: 'bg-emerald-50 border-emerald-200 text-emerald-900',
+      error: 'bg-rose-50 border-rose-200 text-rose-900'
+    };
+    return `<div id="scan-status-box" role="status" class="p-3 rounded-xl border text-[11px] leading-relaxed ${styles[this.scanStatus.type] || styles.info}">${this.scanStatus.message}</div>`;
+  }
+
+  renderFeedback() {
+    const fb = this.verificationFeedback;
+    if (!fb) return '';
+    const titles = {
+      invalid_qr: '⌛ Invalid or expired QR code',
+      distance_exceeded: '📍 Outside the 150 m classroom radius',
+      session_closed: '⏸️ No active session',
+      student_not_found: '👤 Student not found',
+      missing_qr: '🔳 QR code needed',
+      missing_gps: '📍 Location needed',
+      network_error: '📶 Connection problem'
+    };
+    const title = fb.success ? '🎉 Attendance recorded!' : (titles[fb.reason] || '✕ Check-in rejected');
+    const tone = fb.success
+      ? 'bg-emerald-50 border-emerald-300 text-emerald-900'
+      : fb.reason === 'distance_exceeded'
+        ? 'bg-rose-50 border-rose-300 text-rose-900'
+        : 'bg-amber-50 border-amber-300 text-amber-900';
+    const hint = fb.reason === 'invalid_qr'
+      ? '<p class="text-[11px] opacity-80">The code rotates every 20 seconds. Scan the code currently on the instructor\'s screen again.</p>'
+      : '';
+    return `
+      <div id="verification-feedback" class="p-4 rounded-2xl border text-xs space-y-1.5 ${tone}">
+        <div class="font-bold text-sm">${title}</div>
+        <p class="leading-relaxed font-medium">${fb.message || ''}</p>
+        ${hint}
+        ${typeof fb.distance_meters === 'number' ? `
+          <div class="font-mono text-[11px] opacity-80 pt-1">
+            Measured distance: ${fb.distance_meters.toFixed(1)}m • Limit: ${(fb.allowed_radius_meters || 150).toFixed(0)}m
+          </div>` : ''}
+      </div>`;
+  }
+
   /**
    * Renders Student Interface (Mobile Optimized)
    */
   renderStudentView() {
-    const student = this.data.students.find(s => s.student_id === this.state.currentStudentId);
+    const students = this.data.students || [];
+    const student = students.find(s => s.student_id === this.state.currentStudentId);
     const isPresent = student ? student.is_present : false;
-    const distance = this.studentGps.distance;
-    const isWithinRange = distance <= (this.session ? this.session.allowed_radius_meters : 150);
+    const radius = this.session.allowed_radius_meters || 150;
+    const gps = this.studentGps;
+    const isWithinRange = gps.acquired && gps.distance <= radius;
+    const sessionOpen = this.session.is_active !== false;
+    const gpsStatusStyles = {
+      info: 'text-indigo-700', success: 'text-emerald-700', error: 'text-rose-700'
+    };
 
     return `
-      <!-- Mobile Simulation Frame -->
       <div class="max-w-md mx-auto bg-white rounded-3xl border border-slate-200 shadow-xl overflow-hidden">
-        <!-- Phone Top Bar -->
-        <div class="bg-slate-900 text-white p-5 space-y-2">
+        <!-- Header -->
+        <div class="bg-slate-900 text-white p-5 space-y-3">
           <div class="flex items-center justify-between text-xs text-slate-400">
-            <span>CS302 Mobile Attendance</span>
-            <span class="font-mono">150m Geofence</span>
+            <span>👨‍🎓 Student Check-In</span>
+            <span class="font-mono">${this.session.course_name || ''}</span>
           </div>
           <div class="flex items-center gap-3">
             <img src="${student ? student.avatar : ''}" class="w-10 h-10 rounded-full border-2 border-indigo-400 bg-slate-800">
-            <div>
-              <h3 class="font-bold text-white text-sm">${student ? student.name : 'Student'}</h3>
-              <div class="text-[11px] text-indigo-300 font-mono">${student ? student.student_id : ''}</div>
+            <div class="flex-1 min-w-0">
+              <label for="select-student" class="block text-[10px] uppercase tracking-wider text-slate-400 font-semibold">I am</label>
+              <select id="select-student" class="w-full bg-slate-800 text-white text-sm font-bold rounded-lg px-2 py-1 border border-slate-700">
+                ${students.map(s => `<option value="${s.student_id}" ${s.student_id === this.state.currentStudentId ? 'selected' : ''}>${s.name} (${s.student_id})</option>`).join('')}
+              </select>
             </div>
-            <div class="ml-auto">
-              ${isPresent ? `
-                <span class="px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-500 text-white">
-                  ✓ Verified
-                </span>
-              ` : `
-                <span class="px-2.5 py-1 rounded-full text-xs font-bold bg-amber-500 text-white">
-                  Absent
-                </span>
-              `}
-            </div>
+            <span class="px-2.5 py-1 rounded-full text-xs font-bold ${isPresent ? 'bg-emerald-500' : 'bg-amber-500'} text-white whitespace-nowrap">
+              ${isPresent ? '✓ Present' : 'Not checked in'}
+            </span>
           </div>
+          ${sessionOpen ? '' : `
+            <div class="text-[11px] bg-amber-500/20 border border-amber-400/40 text-amber-200 rounded-lg px-3 py-2">
+              ⏸️ The instructor hasn't started a session yet. Check-ins open when the instructor presses "Start Session".
+            </div>`}
         </div>
 
-        <div class="p-6 space-y-6 text-xs">
-          <!-- Step 1: Device GPS Verification -->
+        <div class="p-5 space-y-5 text-xs">
+          <!-- Step 1: QR code -->
           <div class="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
             <div class="flex items-center justify-between">
               <span class="font-bold text-slate-800 flex items-center gap-1.5">
                 <span class="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px]">1</span>
-                Device GPS Verification
+                Scan the instructor's QR code
               </span>
-              <span class="text-[10px] font-mono text-slate-400">Haversine ≤ 150m</span>
+              ${this.scannedQrToken ? '<span class="text-[10px] font-bold text-emerald-600">✓ Code ready</span>' : ''}
             </div>
 
-            <div class="flex items-center justify-between text-slate-600">
-              <span>Classroom: <strong>${this.session.classroom_name}</strong></span>
-              <span class="font-mono text-[11px]">📍 (${this.session.classroom_lat}, ${this.session.classroom_lng})</span>
-            </div>
-
-            <!-- Distance Indicator -->
-            <div class="p-3 rounded-xl border ${
-              isWithinRange
-                ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
-                : 'bg-rose-50 border-rose-200 text-rose-900'
-            }">
-              <div class="flex items-center justify-between">
-                <span class="font-semibold">Calculated Distance:</span>
-                <span class="font-bold text-sm font-mono">${distance ? `${distance.toFixed(1)}m` : 'Not acquired'}</span>
-              </div>
-              <div class="text-[11px] mt-0.5">
-                ${isWithinRange
-                  ? '✓ Within allowed 150-meter classroom perimeter.'
-                  : '✕ Distance exceeds 150-meter perimeter. Attendance will be rejected.'}
-              </div>
-            </div>
-
-            <!-- GPS Controls -->
-            <div class="space-y-2">
-              <button id="btn-acquire-student-gps" class="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold transition flex items-center justify-center gap-1.5">
-                <span>📍</span> Acquire Real Device GPS Location
-              </button>
-
-              <div class="text-[10px] text-slate-400 text-center uppercase tracking-wider font-semibold pt-1">
-                Local Testing Simulators
-              </div>
-              <div class="grid grid-cols-2 gap-2">
-                <button id="btn-sim-near" class="py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-xl font-semibold transition text-center">
-                  🟢 In-Class (30m)
-                </button>
-                <button id="btn-sim-far" class="py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-200 rounded-xl font-semibold transition text-center">
-                  🔴 At Home (850m)
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <!-- Step 2: Live Camera QR Scanner & Photo Upload -->
-          <div class="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
-            <div class="flex items-center justify-between">
-              <span class="font-bold text-slate-800 flex items-center gap-1.5">
-                <span class="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px]">2</span>
-                QR Code Scanner
-              </span>
-              <span class="text-[10px] font-semibold text-indigo-600">Dynamic Anti-Screenshot</span>
-            </div>
-
-            <!-- Camera Viewfinder if active -->
             ${this.cameraActive ? `
-              <div class="reticle-box bg-slate-900 rounded-2xl relative overflow-hidden aspect-[4/3] flex items-center justify-center">
-                <video id="camera-scanner-video" class="w-full h-full object-cover" autoplay playsinline></video>
+              <div class="reticle-box bg-slate-900 rounded-2xl relative overflow-hidden aspect-square sm:aspect-[4/3]">
+                <video id="camera-scanner-video" class="w-full h-full object-cover" autoplay muted playsinline></video>
                 <div class="scanner-laser"></div>
-                <div id="camera-scanner-status" class="absolute bottom-2 left-2 right-2 text-center text-[11px] bg-slate-900/80 text-white py-1 rounded-lg backdrop-blur-xs font-mono">
-                  Starting camera viewfinder...
-                </div>
               </div>
-              <button id="btn-stop-camera" class="w-full py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-bold transition flex items-center justify-center gap-1.5">
-                <span>⏹</span> Stop Camera Scanner
+              <button id="btn-stop-camera" class="w-full py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-bold transition">
+                ⏹ Stop Camera
               </button>
             ` : `
-              <button id="btn-start-camera" class="w-full py-2.5 bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 text-white rounded-xl font-bold transition flex items-center justify-center gap-2 shadow-sm">
-                <span>📷</span> Start Live Camera Scanner
+              <button id="btn-start-camera" class="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold transition flex items-center justify-center gap-2 shadow-sm">
+                <span>📷</span> Start Camera &amp; Scan QR
               </button>
             `}
 
-            <!-- Scanned Token Input Box -->
-            <div class="pt-1">
-              <label class="block text-slate-500 font-semibold mb-1">Scanned QR Token</label>
-              <input id="input-student-qr-token" type="text" placeholder="Scanned token will appear here..." value="${this.scannedQrToken}" class="w-full p-2.5 border rounded-xl font-mono text-[11px] focus:ring-2 focus:ring-indigo-500 bg-white">
+            ${this.renderScanStatus()}
+
+            <!-- Manual fallback -->
+            <div class="pt-1 space-y-1">
+              <label for="input-student-qr-token" class="block text-slate-500 font-semibold">Camera not working? Type the code shown under the QR:</label>
+              <input id="input-student-qr-token" type="text" inputmode="text" autocomplete="off" autocapitalize="characters" spellcheck="false"
+                placeholder="e.g. K7Q2MX" value="${this.scannedQrToken}"
+                class="w-full p-2.5 border rounded-xl font-mono text-sm tracking-widest uppercase focus:ring-2 focus:ring-indigo-500 bg-white">
             </div>
 
-            <!-- Fast Scan Bridges & Image Upload -->
-            <div class="grid grid-cols-3 gap-1.5 pt-1">
-              <button id="btn-capture-screen-qr" class="py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl font-bold transition flex items-center justify-center gap-1 text-[11px]">
-                <span>⚡</span> Live Scan
-              </button>
-              <button id="btn-upload-qr-photo" class="py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded-xl font-semibold transition flex items-center justify-center gap-1 text-[11px]">
-                <span>📁</span> Upload
-              </button>
-              <button id="btn-simulate-stale-qr" class="py-2 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-xl font-semibold transition flex items-center justify-center gap-1 text-[11px]">
-                <span>⚠️</span> Stale QR
+            <div class="flex flex-wrap gap-1.5 pt-1">
+              <button id="btn-upload-qr-photo" class="flex-1 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-xl font-semibold transition text-[11px]">
+                📁 Scan from photo
               </button>
               <input id="input-qr-file-upload" type="file" accept="image/*" class="hidden">
             </div>
           </div>
 
-          <!-- Step 3: Verification Action Button -->
-          <div>
-            <button id="btn-submit-verification" class="w-full py-3 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white rounded-2xl font-extrabold text-sm shadow-md hover:shadow-lg transition flex items-center justify-center gap-2">
-              <span>🚀</span> Verify & Record Attendance
+          <!-- Step 2: Location -->
+          <div class="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
+            <div class="flex items-center justify-between">
+              <span class="font-bold text-slate-800 flex items-center gap-1.5">
+                <span class="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px]">2</span>
+                Share your location
+              </span>
+              <span class="text-[10px] font-mono text-slate-400">must be ≤ ${radius.toFixed(0)}m</span>
+            </div>
+
+            <div class="text-slate-600">Classroom: <strong>${this.session.classroom_name}</strong></div>
+
+            <div class="p-3 rounded-xl border ${
+              !gps.acquired ? 'bg-white border-slate-200 text-slate-600'
+                : isWithinRange ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                : 'bg-rose-50 border-rose-200 text-rose-900'
+            }">
+              <div class="flex items-center justify-between">
+                <span class="font-semibold">Distance to classroom:</span>
+                <span id="student-distance" class="font-bold text-sm font-mono">${gps.acquired ? `${gps.distance.toFixed(1)}m` : 'not acquired'}</span>
+              </div>
+              <div class="text-[11px] mt-0.5">
+                ${!gps.acquired ? 'Location is requested automatically after the scan, or tap the button below.'
+                  : isWithinRange ? `✓ Within the ${radius.toFixed(0)}m classroom radius.`
+                  : `✕ More than ${radius.toFixed(0)}m away — check-in will be rejected.`}
+                ${gps.isSimulated ? ' <em>(simulated)</em>' : ''}
+              </div>
+            </div>
+            ${gps.status ? `<div class="text-[11px] ${gpsStatusStyles[gps.status.type] || ''}">${gps.status.message}</div>` : ''}
+
+            <button id="btn-acquire-student-gps" class="w-full py-2 bg-white hover:bg-slate-100 text-indigo-700 border border-indigo-200 rounded-xl font-bold transition">
+              📍 ${gps.acquired && !gps.isSimulated ? 'Refresh my location' : 'Use my real location'}
             </button>
+
+            <details id="student-test-tools" class="text-[11px] text-slate-500" ${this.testToolsOpen ? 'open' : ''}>
+              <summary class="cursor-pointer font-semibold">🧪 Testing tools (simulate location / codes)</summary>
+              <div class="grid grid-cols-2 gap-2 pt-2">
+                <button id="btn-sim-near" class="py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-xl font-semibold">🟢 In class (~30m)</button>
+                <button id="btn-sim-far" class="py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-200 rounded-xl font-semibold">🔴 At home (~900m)</button>
+                <button id="btn-capture-screen-qr" class="py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl font-semibold">⚡ Fill current code</button>
+                <button id="btn-simulate-stale-qr" class="py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-xl font-semibold">⚠️ Use expired code</button>
+              </div>
+            </details>
           </div>
 
-          <!-- Step 4: Real-Time Feedback Notification -->
-          ${this.verificationFeedback ? `
-            <div class="p-4 rounded-2xl border text-xs space-y-1.5 ${
-              this.verificationFeedback.success
-                ? 'bg-emerald-50 border-emerald-300 text-emerald-900'
-                : this.verificationFeedback.reason === 'distance_exceeded'
-                ? 'bg-rose-50 border-rose-300 text-rose-900'
-                : 'bg-amber-50 border-amber-300 text-amber-900'
-            }">
-              <div class="flex items-center gap-2 font-bold text-sm">
-                <span>${this.verificationFeedback.success ? '🎉 SUCCESS' : '✕ CHECK-IN REJECTED'}</span>
-              </div>
-              <p class="leading-relaxed font-medium">
-                ${this.verificationFeedback.message}
-              </p>
-              ${this.verificationFeedback.distance_meters !== undefined ? `
-                <div class="font-mono text-[11px] opacity-80 pt-1">
-                  Recorded Distance: ${this.verificationFeedback.distance_meters.toFixed(1)}m • Maximum Limit: 150m
-                </div>
-              ` : ''}
-            </div>
-          ` : ''}
+          <!-- Step 3: Verify -->
+          <button id="btn-submit-verification" ${this.submitting ? 'disabled' : ''} class="w-full py-3 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 disabled:opacity-60 text-white rounded-2xl font-extrabold text-sm shadow-md transition flex items-center justify-center gap-2">
+            ${this.submitting ? '⏳ Verifying…' : '✅ Verify &amp; Check In'}
+          </button>
+
+          ${this.renderFeedback()}
         </div>
       </div>
     `;
@@ -928,16 +1174,17 @@ class AttendanceComponent {
       });
     }
 
-    // Fast Capture & Stale QR Handlers
+    // Testing shortcuts (student view)
     const btnCapQr = this.container.querySelector('#btn-capture-screen-qr');
     if (btnCapQr) {
-      btnCapQr.addEventListener('click', () => {
-        if (this.qrInfo && this.qrInfo.token) {
-          this.scannedQrToken = this.qrInfo.token;
-          const input = this.container.querySelector('#input-student-qr-token');
-          if (input) input.value = this.qrInfo.token;
-          QREngine.playSuccessBeep();
-          alert('📷 QR Code scanned successfully!\nCaptured Token: ' + this.qrInfo.token);
+      btnCapQr.addEventListener('click', async () => {
+        try {
+          this.qrInfo = await ApiClient.getSessionQR();
+        } catch (e) { /* use cached */ }
+        if (this.qrInfo && this.qrInfo.short_code) {
+          this.scannedQrToken = this.qrInfo.short_code;
+          this.verificationFeedback = null;
+          this.scanStatus = { type: 'info', message: `🧪 Filled in the current code (${this.qrInfo.short_code}) for testing without a camera.` };
           this.render();
         }
       });
@@ -946,22 +1193,49 @@ class AttendanceComponent {
     const btnStaleQr = this.container.querySelector('#btn-simulate-stale-qr');
     if (btnStaleQr) {
       btnStaleQr.addEventListener('click', () => {
-        this.scannedQrToken = 'STALE_EXPIRED_QR_TOKEN_89746000';
-        const input = this.container.querySelector('#input-student-qr-token');
-        if (input) input.value = this.scannedQrToken;
-        alert('⚠️ Simulated stale/expired screenshot token loaded for anti-spoofing test.');
+        this.scannedQrToken = 'QR_cs302_lec08_1_0000000000000000';
+        this.verificationFeedback = null;
+        this.scanStatus = { type: 'info', message: '🧪 Loaded an expired token to test the anti-screenshot rejection.' };
         this.render();
       });
+    }
+
+    // Manual code input: keep state in sync so re-renders never wipe what the student typed
+    const tokenInput = this.container.querySelector('#input-student-qr-token');
+    if (tokenInput) {
+      tokenInput.addEventListener('input', (e) => {
+        this.scannedQrToken = e.target.value.trim();
+      });
+      tokenInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') this.handleSubmitVerification();
+      });
+    }
+
+    const testTools = this.container.querySelector('#student-test-tools');
+    if (testTools) {
+      testTools.addEventListener('toggle', () => { this.testToolsOpen = testTools.open; });
+    }
+
+    // Student profile selector
+    const selectStudent = this.container.querySelector('#select-student');
+    if (selectStudent) {
+      selectStudent.addEventListener('change', (e) => this.state.setCurrentStudent(e.target.value));
     }
 
     // Student Verification Submit
     const btnSubmitVerify = this.container.querySelector('#btn-submit-verification');
     if (btnSubmitVerify) {
-      btnSubmitVerify.addEventListener('click', () => {
-        const input = this.container.querySelector('#input-student-qr-token');
-        if (input) this.scannedQrToken = input.value.trim();
-        this.handleSubmitVerification();
-      });
+      btnSubmitVerify.addEventListener('click', () => this.handleSubmitVerification());
+    }
+
+    // Instructor session controls
+    const btnStartSession = this.container.querySelector('#btn-start-session');
+    if (btnStartSession) {
+      btnStartSession.addEventListener('click', () => this.handleStartSession());
+    }
+    const btnEndSession = this.container.querySelector('#btn-end-session');
+    if (btnEndSession) {
+      btnEndSession.addEventListener('click', () => this.handleEndSession());
     }
 
     // Individual toggle buttons

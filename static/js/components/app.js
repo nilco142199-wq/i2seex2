@@ -17,7 +17,15 @@ class App {
     this.bindNavigation();
     this.bindRoleSwitcher();
     this.state.subscribe('tab', (tab) => this.switchTab(tab));
-    this.state.subscribe('role', (role) => this.updateRoleUI(role));
+    this.state.subscribe('role', (role) => {
+      this.updateRoleUI(role);
+      // Students land directly on the attendance screen
+      this.state.setActiveTab(role === 'student' ? 'attendance' : 'dashboard');
+      this.switchTab(this.state.activeTab);
+    });
+    this.bindRoleChooser();
+    this.updateRoleUI(this.state.currentRole);
+    this.switchTab(this.state.activeTab);
 
     // Initialize all components
     await Promise.all([
@@ -51,6 +59,23 @@ class App {
     }
   }
 
+  /** Landing screen: shown once per tab until a role is picked. */
+  bindRoleChooser() {
+    const chooser = document.getElementById('role-chooser');
+    if (!chooser) return;
+    if (!this.state.roleChosen) chooser.style.display = 'flex';
+    chooser.querySelectorAll('[data-choose-role]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const role = e.currentTarget.getAttribute('data-choose-role');
+        chooser.style.display = 'none';
+        this.state.setRole(role);
+        this.updateRoleUI(role);
+        this.state.setActiveTab(role === 'student' ? 'attendance' : 'dashboard');
+        this.switchTab(this.state.activeTab);
+      });
+    });
+  }
+
   switchTab(tabName) {
     // Hide all tab panes
     document.querySelectorAll('.tab-pane').forEach(el => el.classList.add('hidden'));
@@ -76,13 +101,16 @@ class App {
   }
 
   updateRoleUI(role) {
+    const roleSelect = document.getElementById('role-select');
+    if (roleSelect && roleSelect.value !== role) roleSelect.value = role;
+    document.body.setAttribute('data-role', role);
     const roleBadge = document.getElementById('current-role-badge');
     if (roleBadge) {
       if (role === 'lecturer') {
-        roleBadge.textContent = '👨‍🏫 Lecturer Mode';
+        roleBadge.textContent = '👨‍🏫 Instructor Mode';
         roleBadge.className = 'px-3 py-1 text-xs font-bold rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200';
       } else {
-        roleBadge.textContent = '👨‍🎓 Student Mode (David Kim)';
+        roleBadge.textContent = '👨‍🎓 Student Mode';
         roleBadge.className = 'px-3 py-1 text-xs font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200';
       }
     }
@@ -170,10 +198,13 @@ class App {
         if (this.state.activeTab === 'dashboard') {
           this.renderDashboardSummary();
         }
+        if (this.state.activeTab === 'attendance') {
+          this.attendanceComp.onBackgroundRefresh();
+        }
       } catch (err) {
         console.warn('Background sync:', err);
       }
-    }, 8000);
+    }, 5000);
   }
 }
 

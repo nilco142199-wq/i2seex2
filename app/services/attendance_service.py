@@ -8,7 +8,10 @@ Also supports audit logging of remote check-in attempts and automated photo scan
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from app.repositories.datastore import DataStore
-from app.models.session import ClassSession, CheckInAttempt, haversine_distance
+from app.models.session import (
+    ClassSession, CheckInAttempt, haversine_distance,
+    ARIEL_UNIVERSITY_NAME, ARIEL_UNIVERSITY_LAT, ARIEL_UNIVERSITY_LNG, DEFAULT_RADIUS_METERS
+)
 
 
 class AttendanceService:
@@ -47,13 +50,20 @@ class AttendanceService:
         """Creates or updates a class lecture session with GPS base coordinates."""
         session = ClassSession(
             course_name=course_name or "CS302 - Advanced OOP",
-            classroom_name=classroom_name or "Turing Hall 101",
+            classroom_name=classroom_name or ARIEL_UNIVERSITY_NAME,
             classroom_lat=float(classroom_lat),
             classroom_lng=float(classroom_lng),
             allowed_radius_meters=float(allowed_radius_meters),
             qr_mode=qr_mode,
             qr_rotation_interval_seconds=int(qr_rotation_interval_seconds)
         )
+        # Keep the live state (open/closed + audit log) when only settings change
+        previous = self._datastore.get_active_session()
+        if previous:
+            session.is_active = previous.is_active
+            session.started_at = previous.started_at
+            session.ended_at = previous.ended_at
+            session.attempts_log = previous.attempts_log
         self._datastore.set_session(session)
         return session.to_dict()
 
@@ -68,6 +78,22 @@ class AttendanceService:
             "classroom_lng": session.classroom_lng,
             "allowed_radius_meters": session.allowed_radius_meters
         }
+
+    def start_session(self, reset_roster: bool = True) -> Dict[str, Any]:
+        """Instructor opens a session. By default every student starts as absent."""
+        session = self.get_session()
+        if reset_roster:
+            for student in self._datastore.get_all_students():
+                student.mark_absent()
+            session.attempts_log = []
+        session.start()
+        return {"success": True, "session": session.to_dict()}
+
+    def end_session(self) -> Dict[str, Any]:
+        """Instructor closes the session; further check-ins are rejected."""
+        session = self.get_session()
+        session.end()
+        return {"success": True, "session": session.to_dict()}
 
     def verify_qr_gps_checkin(
         self,
@@ -93,6 +119,14 @@ class AttendanceService:
 
         s_lat = float(student_lat)
         s_lng = float(student_lng)
+
+        # 0. The instructor must have an open session
+        if not session.is_active:
+            return {
+                "success": False,
+                "reason": "session_closed",
+                "message": "The instructor has not started a session (or it has ended). Ask the instructor to start the class session."
+            }
 
         # 1. Calculate Geodesic Distance via Haversine Formula
         distance = session.calculate_distance(s_lat, s_lng)

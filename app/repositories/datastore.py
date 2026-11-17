@@ -9,7 +9,10 @@ from app.models.feedback import Comment
 from app.models.poll import Poll
 from app.models.meeting_summary import MeetingSummary, ActionItem, TranscriptSnippet
 from app.models.homework_review import SubmissionReview, SolidCompliance
-from app.models.session import ClassSession, CheckInAttempt
+from app.models.session import (
+    ClassSession, CheckInAttempt,
+    ARIEL_UNIVERSITY_NAME, ARIEL_UNIVERSITY_LAT, ARIEL_UNIVERSITY_LNG, DEFAULT_RADIUS_METERS
+)
 
 
 class DataStore:
@@ -42,10 +45,10 @@ class DataStore:
             session_id="cs302_lec08",
             course_name="CS302 - Advanced OOP",
             instructor_name="Prof. Architect",
-            classroom_name="Turing Hall 101",
-            classroom_lat=32.085300,
-            classroom_lng=34.781800,
-            allowed_radius_meters=150.0,
+            classroom_name=ARIEL_UNIVERSITY_NAME,
+            classroom_lat=ARIEL_UNIVERSITY_LAT,
+            classroom_lng=ARIEL_UNIVERSITY_LNG,
+            allowed_radius_meters=DEFAULT_RADIUS_METERS,
             qr_mode="dynamic",
             qr_rotation_interval_seconds=20
         )
@@ -54,8 +57,8 @@ class DataStore:
         self._session.log_attempt(CheckInAttempt(
             student_id="s105",
             student_name="Marcus Brody",
-            student_lat=32.094500,
-            student_lng=34.792100,
+            student_lat=32.113922,
+            student_lng=35.219744,
             distance_meters=1380.5,
             status="rejected_distance",
             message="Geofence Violation: Student is 1380.5m away (Limit: 150m)",

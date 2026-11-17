@@ -112,18 +112,18 @@ class TestGeofenceAndQRSession(unittest.TestCase):
         token = service.get_current_qr()["token"]
 
         # 1. Close distance (within 150m) -> SUCCESS
-        res_ok = service.verify_qr_gps_checkin("s103", token, 32.085500, 34.781800)
+        res_ok = service.verify_qr_gps_checkin("s103", token, 32.104900, 35.209444)
         self.assertTrue(res_ok["success"])
         self.assertLessEqual(res_ok["distance_meters"], 150.0)
 
         # 2. Too far away (>150m) -> REJECTED_DISTANCE
-        res_far = service.verify_qr_gps_checkin("s108", token, 32.095000, 34.781800)
+        res_far = service.verify_qr_gps_checkin("s108", token, 32.114400, 35.209444)
         self.assertFalse(res_far["success"])
         self.assertEqual(res_far["reason"], "distance_exceeded")
         self.assertGreater(res_far["distance_meters"], 150.0)
 
         # 3. Invalid QR -> REJECTED_QR
-        res_bad_qr = service.verify_qr_gps_checkin("s105", "STALE_TOKEN", 32.085350, 34.781800)
+        res_bad_qr = service.verify_qr_gps_checkin("s105", "STALE_TOKEN", 32.104800, 35.209444)
         self.assertFalse(res_bad_qr["success"])
         self.assertEqual(res_bad_qr["reason"], "invalid_qr")
 
@@ -198,6 +198,85 @@ class TestServicesAndRouter(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertTrue(body["success"])
         self.assertIn("answer", body)
+
+
+class TestArielUniversityGeofence(unittest.TestCase):
+    """The default classroom is Ariel University with a 150 m radius."""
+    def test_default_location_and_radius(self):
+        session = AttendanceService().get_session()
+        self.assertEqual(session.classroom_name, "Ariel University")
+        self.assertAlmostEqual(session.classroom_lat, 32.104722, places=5)
+        self.assertAlmostEqual(session.classroom_lng, 35.209444, places=5)
+        self.assertEqual(session.allowed_radius_meters, 150.0)
+
+    def test_boundary_inside_and_outside_150m(self):
+        service = AttendanceService()
+        service.start_session()
+        token = service.get_current_qr()["token"]
+        # ~140 m north of campus centre -> accepted
+        ok = service.verify_qr_gps_checkin("s101", token, 32.104722 + 0.00126, 35.209444)
+        self.assertTrue(ok["success"], ok)
+        self.assertLess(ok["distance_meters"], 150.0)
+        # ~160 m north -> rejected
+        far = service.verify_qr_gps_checkin("s102", token, 32.104722 + 0.00144, 35.209444)
+        self.assertFalse(far["success"])
+        self.assertEqual(far["reason"], "distance_exceeded")
+        # Tel Aviv (old default) -> far outside
+        ta = service.verify_qr_gps_checkin("s104", token, 32.085300, 34.781800)
+        self.assertEqual(ta["reason"], "distance_exceeded")
+
+
+class TestQrScanFixes(unittest.TestCase):
+    """QR deep links, short manual codes and session start/end."""
+    def setUp(self):
+        self.session = ClassSession(session_id="test_qr", qr_mode="dynamic", qr_rotation_interval_seconds=20)
+
+    def test_deep_link_url_is_accepted(self):
+        token = self.session.get_current_qr_info()["token"]
+        url = f"https://192.168.1.20:8443/?role=student&token={token}"
+        self.assertTrue(self.session.validate_qr_token(url))
+
+    def test_short_code_is_accepted_case_insensitive(self):
+        code = self.session.get_current_qr_info()["short_code"]
+        self.assertEqual(len(code), 6)
+        self.assertTrue(self.session.validate_qr_token(code))
+        self.assertTrue(self.session.validate_qr_token(f" {code[:3].lower()}-{code[3:].lower()} "))
+        self.assertFalse(self.session.validate_qr_token("ZZZZZZ" if code != "ZZZZZZ" else "YYYYYY"))
+
+    def test_previous_slot_is_grace_window_only(self):
+        slot = self.session.get_time_window_slot()
+        self.assertTrue(self.session.validate_qr_token(self.session.generate_token_for_slot(slot - 1)))
+        self.assertFalse(self.session.validate_qr_token(self.session.generate_token_for_slot(slot - 2)))
+        self.assertTrue(self.session.validate_qr_token(self.session.generate_short_code_for_slot(slot - 1)))
+        self.assertFalse(self.session.validate_qr_token(self.session.generate_short_code_for_slot(slot - 2)))
+
+    def test_ended_session_rejects_checkins_and_start_reopens(self):
+        service = AttendanceService()
+        service.end_session()
+        token = service.get_current_qr()["token"]
+        res = service.verify_qr_gps_checkin("s103", token, 32.104900, 35.209444)
+        self.assertFalse(res["success"])
+        self.assertEqual(res["reason"], "session_closed")
+
+        started = service.start_session()
+        self.assertTrue(started["session"]["is_active"])
+        self.assertEqual(service.get_roster_summary()["present_count"], 0)
+        token = service.get_current_qr()["token"]
+        res = service.verify_qr_gps_checkin("s103", token, 32.104900, 35.209444)
+        self.assertTrue(res["success"])
+
+    def test_router_session_endpoints_and_bad_gps(self):
+        router = ApiRouter()
+        code, body = router.handle("POST", "/api/session/end", b"{}")
+        self.assertEqual(code, 200)
+        self.assertFalse(body["session"]["is_active"])
+        code, body = router.handle("POST", "/api/session/start", b"{}")
+        self.assertEqual(code, 200)
+        self.assertTrue(body["session"]["is_active"])
+        code, body = router.handle("POST", "/api/attendance/verify",
+                                   json.dumps({"student_id": "s103", "qr_token": "x", "lat": "abc", "lng": 1}).encode())
+        self.assertEqual(code, 400)
+        self.assertEqual(body["reason"], "missing_gps")
 
 
 if __name__ == "__main__":
