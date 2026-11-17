@@ -1,0 +1,109 @@
+/* Custom CSS Enhancements for Classroom Suite */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+code, pre, .font-mono {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Glassmorphism accents */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* Pulse animation for live indicators */
+@keyframes pulse-ring {
+  0% { transform: scale(0.95); opacity: 0.8; }
+  50% { transform: scale(1.15); opacity: 0.3; }
+  100% { transform: scale(0.95); opacity: 0.8; }
+}
+
+.pulse-dot {
+  animation: pulse-ring 2s infinite ease-in-out;
+}
+
+/* Smooth bar transitions */
+.bar-transition {
+  transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Tab active state line */
+.tab-active {
+  color: #4f46e5 !important;
+  border-bottom: 2px solid #4f46e5;
+  font-weight: 600;
+}
+
+/* Camera Scanner Laser Animation */
+@keyframes laser-sweep {
+  0% { top: 5%; opacity: 0.9; }
+  50% { top: 90%; opacity: 1; }
+  100% { top: 5%; opacity: 0.9; }
+}
+
+.scanner-laser {
+  position: absolute;
+  left: 5%;
+  right: 5%;
+  height: 2.5px;
+  background: linear-gradient(90deg, transparent, #22c55e, #4ade80, #22c55e, transparent);
+  box-shadow: 0 0 12px #22c55e;
+  animation: laser-sweep 2s infinite ease-in-out;
+  border-radius: 9999px;
+  pointer-events: none;
+}
+
+/* Viewfinder corner brackets */
+.reticle-box {
+  position: relative;
+  overflow: hidden;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-radius: 1.25rem;
+}
+.reticle-box::before {
+  content: '';
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  width: 25px;
+  height: 25px;
+  border-top: 3px solid #4ade80;
+  border-left: 3px solid #4ade80;
+  border-top-left-radius: 8px;
+  pointer-events: none;
+  z-index: 10;
+}
+.reticle-box::after {
+  content: '';
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  width: 25px;
+  height: 25px;
+  border-bottom: 3px solid #4ade80;
+  border-right: 3px solid #4ade80;
+  border-bottom-right-radius: 8px;
+  pointer-events: none;
+  z-index: 10;
+}
