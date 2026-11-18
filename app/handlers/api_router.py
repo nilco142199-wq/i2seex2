@@ -5,7 +5,7 @@ Dispatches incoming HTTP requests to dedicated domain services.
 """
 import json
 from urllib.parse import urlparse, parse_qs
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional
 from app.services.attendance_service import AttendanceService
 from app.models.session import ARIEL_UNIVERSITY_NAME, ARIEL_UNIVERSITY_LAT, ARIEL_UNIVERSITY_LNG, DEFAULT_RADIUS_METERS
 from app.services.feedback_service import FeedbackService
@@ -28,7 +28,9 @@ class ApiRouter:
         self._review_service = CodeReviewService()
         self._video_service = VideoSummaryService()
 
-    def handle(self, method: str, path: str, body: bytes) -> Tuple[int, Dict[str, Any]]:
+    def handle(self, method: str, path: str, body: bytes,
+               client: Optional[Dict[str, Any]] = None) -> Tuple[int, Dict[str, Any]]:
+        """`client` carries per-request info from the HTTP layer, e.g. {"device_cookie": "..."}."""
         parsed_url = urlparse(path)
         route_path = parsed_url.path.rstrip('/')
         query_params = parse_qs(parsed_url.query)
@@ -42,16 +44,33 @@ class ApiRouter:
 
         # Route matching
         try:
+            client = client or {}
             if method == "GET":
-                return self._handle_get(route_path, query_params)
+                return self._handle_get(route_path, query_params, client)
             elif method == "POST":
-                return self._handle_post(route_path, data)
+                return self._handle_post(route_path, data, client)
             else:
                 return 405, {"error": f"Method {method} not allowed."}
         except Exception as e:
             return 500, {"error": f"Internal server error: {str(e)}"}
 
-    def _handle_get(self, path: str, query: Dict[str, list]) -> Tuple[int, Dict[str, Any]]:
+    #: extra addresses of the computer running the server (LAN IP, public IP) – set by server.py
+    server_network_ips: list = []
+
+    def _instructor_ips(self, client: Dict[str, Any]) -> list:
+        ip = client.get("ip")
+        ips = [ip] if ip else []
+        # Instructor on localhost: the server computer's own LAN/public addresses represent the room
+        if not ip or ip.startswith("127.") or ip == "::1":
+            ips += list(self.server_network_ips)
+        return ips
+
+    @staticmethod
+    def _device_ids(client: Dict[str, Any], *extra) -> list:
+        """Phone identifiers: server cookie + id kept in the browser's localStorage."""
+        return [d for d in [client.get("device_cookie"), *extra] if d]
+
+    def _handle_get(self, path: str, query: Dict[str, list], client: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
         if path == "/api/status":
             return 200, {
                 "status": "healthy",
@@ -69,7 +88,8 @@ class ApiRouter:
 
         elif path == "/api/attendance/me":
             student_id = query.get("student_id", [""])[0]
-            return 200, self._attendance_service.get_student_status(student_id)
+            device_ids = self._device_ids(client, query.get("device_id", [""])[0])
+            return 200, self._attendance_service.get_student_status(student_id, device_ids)
 
         elif path == "/api/attendance/stats":
             return 200, self._attendance_service.get_roster_summary()
@@ -78,6 +98,8 @@ class ApiRouter:
             return 200, self._attendance_service.get_session_info()
 
         elif path == "/api/session/qr":
+            # Only the instructor's screen asks for the live QR -> remember its network
+            self._attendance_service.note_instructor_network(*self._instructor_ips(client))
             return 200, self._attendance_service.get_current_qr()
 
         elif path == "/api/feedback":
@@ -125,7 +147,7 @@ class ApiRouter:
 
         return 404, {"error": f"API endpoint not found: {path}"}
 
-    def _handle_post(self, path: str, data: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+    def _handle_post(self, path: str, data: Dict[str, Any], client: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
         # Attendance Routes
         if path == "/api/attendance/verify":
             student_id = data.get("student_id")
@@ -140,7 +162,8 @@ class ApiRouter:
                 return 400, {"success": False, "reason": "missing_gps", "message": "GPS coordinates must be numbers."}
             if not student_id:
                 return 400, {"success": False, "reason": "student_not_found", "message": "Please select your student profile first."}
-            res = self._attendance_service.verify_qr_gps_checkin(student_id, qr_token, lat, lng)
+            res = self._attendance_service.verify_qr_gps_checkin(
+                student_id, qr_token, lat, lng, device_ids=self._device_ids(client, data.get("device_id")))
             # Return 200 with result so client receives clear structured verification feedback
             return 200, res
 
@@ -157,10 +180,28 @@ class ApiRouter:
             return 200, {"success": True, "session": res}
 
         elif path == "/api/students/register":
-            res = self._attendance_service.register_student(data.get("student_id"), data.get("name"))
+            res = self._attendance_service.register_student(
+                data.get("student_id"), data.get("name"), device_ids=self._device_ids(client, data.get("device_id")))
             return (200, res) if res.get("success") else (400, res)
 
+        elif path == "/api/attendance/request-approval":
+            res = self._attendance_service.request_manual_approval(
+                data.get("student_id"), data.get("qr_token", ""),
+                device_ids=self._device_ids(client, data.get("device_id")), reason=data.get("reason", ""))
+            return (200, res) if res.get("success") else (400, res)
+
+        elif path == "/api/attendance/approve":
+            res = self._attendance_service.resolve_manual_approval(data.get("student_id"), bool(data.get("approve", True)))
+            return (200, res) if res.get("success") else (400, res)
+
+        elif path == "/api/attendance/verify-network":
+            res = self._attendance_service.verify_by_network(
+                data.get("student_id"), data.get("qr_token", ""), client.get("ip", ""),
+                device_ids=self._device_ids(client, data.get("device_id")))
+            return 200, res
+
         elif path == "/api/session/start":
+            self._attendance_service.note_instructor_network(*self._instructor_ips(client))
             res = self._attendance_service.start_session(reset_roster=bool(data.get("reset_roster", True)))
             return 200, res
 

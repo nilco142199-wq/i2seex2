@@ -43,7 +43,47 @@ class ClassroomRequestHandler(BaseHTTPRequestHandler):
     """
     router = ApiRouter()
     lan_origin = None  # address other devices use, e.g. "https://192.168.1.23:8443" or a tunnel URL
+    server_mode = "http"  # "http" | "https-self-signed" | "tunnel" (shown to phones for better help)
     timeout = 30       # seconds; an idle/half-open connection can never block the server
+
+    DEVICE_COOKIE = "cs302_device"
+
+    def _client_ip(self) -> str:
+        """Real client address (Cloudflare tunnel / proxies put it in a header)."""
+        for header in ("CF-Connecting-IP", "X-Forwarded-For", "X-Real-IP"):
+            value = self.headers.get(header)
+            if value:
+                return value.split(",")[0].strip()
+        return self.client_address[0]
+
+    def _device_cookie(self) -> str:
+        """Random per-browser id (cookie). Created on the first request and sent back with Set-Cookie."""
+        if getattr(self, "_device_id", None):
+            return self._device_id
+        import re as _re
+        import uuid
+        match = _re.search(rf"(?:^|;\s*){self.DEVICE_COOKIE}=([A-Za-z0-9\-]{{8,64}})", self.headers.get("Cookie", ""))
+        if match:
+            self._device_id, self._device_is_new = match.group(1), False
+        else:
+            self._device_id, self._device_is_new = uuid.uuid4().hex, True
+        return self._device_id
+
+    def handle_one_request(self):
+        self._device_id, self._device_is_new = None, False  # per request (keep-alive safe)
+        super().handle_one_request()
+
+    def end_headers(self):
+        # Give every browser a long-lived device cookie (used for one-phone-per-student)
+        if hasattr(self, "headers") and self.headers is not None:
+            self._device_cookie()
+            if getattr(self, "_device_is_new", False):
+                self.send_header("Set-Cookie", f"{self.DEVICE_COOKIE}={self._device_id}; Path=/; "
+                                               f"Max-Age=31536000; SameSite=Lax")
+                self._device_is_new = False
+        # Explicitly allow camera + location for this site (never blocked by the server)
+        self.send_header("Permissions-Policy", "geolocation=(self), camera=(self)")
+        super().end_headers()
 
     def setup(self):
         # HTTPS: do the TLS handshake here, in this request's own thread, so a phone that
@@ -81,7 +121,7 @@ class ClassroomRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_api(self, method: str):
         if self.path.split("?")[0].rstrip("/") == "/api/server-info":
-            payload = json.dumps({"lan_origin": self.lan_origin}).encode("utf-8")
+            payload = json.dumps({"lan_origin": self.lan_origin, "mode": self.server_mode}).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))
@@ -92,7 +132,8 @@ class ClassroomRequestHandler(BaseHTTPRequestHandler):
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length) if content_length > 0 else b""
 
-        status_code, response_data = self.router.handle(method, self.path, body)
+        status_code, response_data = self.router.handle(
+            method, self.path, body, client={"device_cookie": self._device_cookie(), "ip": self._client_ip()})
 
         json_bytes = json.dumps(response_data, indent=2).encode("utf-8")
         self.send_response(status_code)
@@ -107,6 +148,8 @@ class ClassroomRequestHandler(BaseHTTPRequestHandler):
         clean_path = self.path.split("?")[0].lstrip("/")
         if not clean_path or clean_path == "/":
             clean_path = "index.html"
+        elif clean_path.rstrip("/") == "gps":
+            clean_path = "gps.html"  # standalone location test page
 
         file_path = os.path.normpath(os.path.join(STATIC_DIR, clean_path))
 
@@ -244,6 +287,21 @@ def start_tunnel(port: int):
     return proc, found["url"]
 
 
+def detect_public_ips() -> list:
+    """This computer's public IPv4/IPv6 (as seen on the internet) – used for the same-Wi-Fi check."""
+    import urllib.request
+    found = []
+    for url in ("https://1.1.1.1/cdn-cgi/trace", "https://[2606:4700:4700::1111]/cdn-cgi/trace"):
+        try:
+            with urllib.request.urlopen(url, timeout=4) as resp:
+                for line in resp.read().decode().splitlines():
+                    if line.startswith("ip="):
+                        found.append(line[3:].strip())
+        except Exception:
+            pass
+    return found
+
+
 def run(host: str = "127.0.0.1", port: int = 8000, use_https: bool = False, use_tunnel: bool = False):
     server_address = (host, port)
     try:
@@ -262,9 +320,14 @@ def run(host: str = "127.0.0.1", port: int = 8000, use_https: bool = False, use_
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(cert_file, key_file)
         httpd.socket = context.wrap_socket(httpd.socket, server_side=True, do_handshake_on_connect=False)
+        ClassroomRequestHandler.server_mode = "https-self-signed"
 
     if host in ("0.0.0.0", "") or host == lan_ip:
         ClassroomRequestHandler.lan_origin = f"{scheme}://{lan_ip}:{port}"
+
+    # Addresses that represent "the classroom network" when the instructor uses localhost
+    from app.handlers.api_router import ApiRouter as _Router
+    _Router.server_network_ips = [lan_ip] + (detect_public_ips() if use_tunnel else [])
 
     tunnel_proc, tunnel_url = (None, None)
     if use_tunnel:
@@ -275,6 +338,7 @@ def run(host: str = "127.0.0.1", port: int = 8000, use_https: bool = False, use_
             httpd.shutdown()
             sys.exit(1)
         ClassroomRequestHandler.lan_origin = tunnel_url
+        ClassroomRequestHandler.server_mode = "tunnel"
         print("=" * 70)
         print("🎓 CS302 Interactive Classroom Suite — PUBLIC LINK READY")
         print("")

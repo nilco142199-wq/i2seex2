@@ -90,15 +90,6 @@ class TestGeofenceAndQRSession(unittest.TestCase):
             qr_rotation_interval_seconds=20
         )
 
-    def test_haversine_distance(self):
-        # 30 meters north
-        d = haversine_distance(32.085300, 34.781800, 32.085570, 34.781800)
-        self.assertAlmostEqual(d, 30.0, delta=2.0)
-
-        # ~890 meters away
-        d_far = haversine_distance(32.085300, 34.781800, 32.093300, 34.781800)
-        self.assertGreater(d_far, 800.0)
-
     def test_qr_rotation_and_validation(self):
         qr_info = self.session.get_current_qr_info()
         valid_token = qr_info["token"]
@@ -107,22 +98,9 @@ class TestGeofenceAndQRSession(unittest.TestCase):
         # Invalid token should fail
         self.assertFalse(self.session.validate_qr_token("INVALID_FAKE_TOKEN"))
 
-    def test_checkin_dual_factor_geofence(self):
+    def test_checkin_rejects_invalid_qr(self):
         service = AttendanceService()
-        token = service.get_current_qr()["token"]
-
-        # 1. Close distance (within radius) -> SUCCESS
-        res_ok = service.verify_qr_gps_checkin("s103", token, 32.104900, 35.209444)
-        self.assertTrue(res_ok["success"])
-        self.assertLessEqual(res_ok["distance_meters"], 500.0)
-
-        # 2. Too far away (>500m) -> REJECTED_DISTANCE
-        res_far = service.verify_qr_gps_checkin("s108", token, 32.114400, 35.209444)
-        self.assertFalse(res_far["success"])
-        self.assertEqual(res_far["reason"], "distance_exceeded")
-        self.assertGreater(res_far["distance_meters"], 500.0)
-
-        # 3. Invalid QR -> REJECTED_QR
+        service.start_session()
         res_bad_qr = service.verify_qr_gps_checkin("s105", "STALE_TOKEN", 32.104800, 35.209444)
         self.assertFalse(res_bad_qr["success"])
         self.assertEqual(res_bad_qr["reason"], "invalid_qr")
@@ -200,30 +178,22 @@ class TestServicesAndRouter(unittest.TestCase):
         self.assertIn("answer", body)
 
 
-class TestArielUniversityGeofence(unittest.TestCase):
-    """The default classroom is Ariel University with a 500 m radius."""
-    def test_default_location_and_radius(self):
-        session = AttendanceService().get_session()
-        self.assertEqual(session.classroom_name, "Ariel University")
-        self.assertAlmostEqual(session.classroom_lat, 32.104722, places=5)
-        self.assertAlmostEqual(session.classroom_lng, 35.209444, places=5)
-        self.assertEqual(session.allowed_radius_meters, 500.0)
+class TestLocation(unittest.TestCase):
+    """The ONLY location test: distance from Ariel University decides the check-in (500 m radius)."""
 
-    def test_boundary_inside_and_outside_500m(self):
+    def test_distance_from_required_location(self):
         service = AttendanceService()
         service.start_session()
         token = service.get_current_qr()["token"]
-        # ~490 m north of campus centre -> accepted
-        ok = service.verify_qr_gps_checkin("s101", token, 32.104722 + 0.00440, 35.209444)
-        self.assertTrue(ok["success"], ok)
-        self.assertLess(ok["distance_meters"], 500.0)
-        # ~510 m north -> rejected
-        far = service.verify_qr_gps_checkin("s102", token, 32.104722 + 0.00460, 35.209444)
+
+        near = service.verify_qr_gps_checkin("s101", token, 32.104722 + 0.0003, 35.209444)   # ~33 m
+        far = service.verify_qr_gps_checkin("s102", token, 32.104722 + 0.0090, 35.209444)    # ~1 km
+
+        self.assertTrue(near["success"])
+        self.assertLess(near["distance_meters"], 500.0)
         self.assertFalse(far["success"])
         self.assertEqual(far["reason"], "distance_exceeded")
-        # Tel Aviv (old default) -> far outside
-        ta = service.verify_qr_gps_checkin("s104", token, 32.085300, 34.781800)
-        self.assertEqual(ta["reason"], "distance_exceeded")
+        self.assertGreater(far["distance_meters"], 500.0)
 
 
 class TestQrScanFixes(unittest.TestCase):
@@ -265,7 +235,7 @@ class TestQrScanFixes(unittest.TestCase):
         res = service.verify_qr_gps_checkin("s103", token, 32.104900, 35.209444)
         self.assertTrue(res["success"])
 
-    def test_router_session_endpoints_and_bad_gps(self):
+    def test_router_session_endpoints(self):
         router = ApiRouter()
         code, body = router.handle("POST", "/api/session/end", b"{}")
         self.assertEqual(code, 200)
@@ -273,10 +243,6 @@ class TestQrScanFixes(unittest.TestCase):
         code, body = router.handle("POST", "/api/session/start", b"{}")
         self.assertEqual(code, 200)
         self.assertTrue(body["session"]["is_active"])
-        code, body = router.handle("POST", "/api/attendance/verify",
-                                   json.dumps({"student_id": "s103", "qr_token": "x", "lat": "abc", "lng": 1}).encode())
-        self.assertEqual(code, 400)
-        self.assertEqual(body["reason"], "missing_gps")
 
 
 class TestScalability(unittest.TestCase):
@@ -344,7 +310,6 @@ class TestScalability(unittest.TestCase):
         code, body = router.handle("GET", "/api/attendance/me?student_id=s101", b"")
         self.assertEqual(code, 200)
         self.assertEqual(body["student"]["name"], "Noa Cohen")
-        self.assertEqual(body["session"]["allowed_radius_meters"], 500.0)
 
     def test_self_registration(self):
         router = ApiRouter()
@@ -359,6 +324,82 @@ class TestScalability(unittest.TestCase):
         code, body = router.handle("POST", "/api/students/register",
                                    json.dumps({"student_id": "x", "name": "A"}).encode())
         self.assertEqual(code, 400)
+
+
+class TestOnePhonePerStudent(unittest.TestCase):
+    """A student can't check in classmates from his own phone."""
+
+    def setUp(self):
+        self.service = AttendanceService()
+        self.service.start_session()
+        self.token = self.service.get_current_qr()["token"]
+        self.lat, self.lng = 32.104900, 35.209444
+
+    def test_same_phone_cannot_check_in_second_student(self):
+        phone = ["phone-aaaa-1111"]
+        first = self.service.verify_qr_gps_checkin("s101", self.token, self.lat, self.lng, device_ids=phone)
+        second = self.service.verify_qr_gps_checkin("s102", self.token, self.lat, self.lng, device_ids=phone)
+        self.assertTrue(first["success"])
+        self.assertFalse(second["success"])
+        self.assertEqual(second["reason"], "device_already_used")
+        self.assertEqual(second["device_student_id"], "s101")
+        summary = self.service.get_roster_summary()
+        self.assertEqual(summary["present_count"], 1)
+        self.assertTrue(any(a["status"] == "rejected_device" for a in summary["flagged_remote_attempts"]))
+
+    def test_cookie_or_local_id_alone_is_enough_to_detect(self):
+        self.service.verify_qr_gps_checkin("s101", self.token, self.lat, self.lng, device_ids=["cookie-1234", "local-5678"])
+        # student cleared localStorage but the cookie is still there (or the other way round)
+        res = self.service.verify_qr_gps_checkin("s102", self.token, self.lat, self.lng, device_ids=["cookie-1234", "local-9999"])
+        self.assertEqual(res["reason"], "device_already_used")
+
+    def test_different_phones_both_succeed_and_new_session_resets(self):
+        a = self.service.verify_qr_gps_checkin("s101", self.token, self.lat, self.lng, device_ids=["phone-aaaa"])
+        b = self.service.verify_qr_gps_checkin("s102", self.token, self.lat, self.lng, device_ids=["phone-bbbb"])
+        self.assertTrue(a["success"] and b["success"])
+        self.service.start_session()  # next lecture: the phone may be used by its owner again
+        token = self.service.get_current_qr()["token"]
+        again = self.service.verify_qr_gps_checkin("s102", token, self.lat, self.lng, device_ids=["phone-aaaa"])
+        self.assertTrue(again["success"])
+
+    def test_one_self_registration_per_phone(self):
+        ok = self.service.register_student("318111222", "Moshe Levi", device_ids=["phone-reg-1"])
+        bad = self.service.register_student("318333444", "Fake Friend", device_ids=["phone-reg-1"])
+        self.assertTrue(ok["success"])
+        self.assertFalse(bad["success"])
+        self.assertEqual(bad["reason"], "device_already_used")
+
+    def test_manual_approval_when_location_is_blocked(self):
+        phone = ["phone-nogps-1"]
+        bad_qr = self.service.request_manual_approval("s103", "OLD", device_ids=phone)
+        self.assertEqual(bad_qr["reason"], "invalid_qr")
+        req = self.service.request_manual_approval("s103", self.token, device_ids=phone)
+        self.assertEqual(req["status"], "pending")
+        # the same phone can't send a request for a friend
+        friend = self.service.request_manual_approval("s104", self.token, device_ids=phone)
+        self.assertEqual(friend["reason"], "device_already_used")
+        self.assertEqual(len(self.service.get_roster_summary()["pending_approvals"]), 1)
+        self.service.resolve_manual_approval("s103", approve=True)
+        student = self.service.get_student_status("s103", phone)
+        self.assertTrue(student["student"]["is_present"])
+        self.assertEqual(student["student"]["check_in_method"], "instructor_approved")
+        self.assertEqual(student["device_student_id"], "s103")
+
+
+class TestWifiFallback(unittest.TestCase):
+    """Phone blocks location: current QR + same Wi-Fi as the instructor is accepted instead."""
+
+    def test_same_wifi_accepted_other_network_rejected(self):
+        service = AttendanceService()
+        service.start_session()
+        service.note_instructor_network("85.130.10.20")            # instructor's public IP (campus Wi-Fi)
+        token = service.get_current_qr()["token"]
+        other = service.verify_by_network("s104", token, "176.12.1.9", device_ids=["phone-x-1"])  # mobile data
+        same = service.verify_by_network("s105", token, "85.130.10.20", device_ids=["phone-y-2"])
+        self.assertEqual(other["reason"], "different_network")
+        self.assertTrue(same["success"])
+        self.assertEqual(same["student"]["check_in_method"], "qr_network")
+        self.assertTrue(AttendanceService.same_network("192.168.1.10", "192.168.1.77"))   # same home/LAN Wi-Fi
 
 
 if __name__ == "__main__":

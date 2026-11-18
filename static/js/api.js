@@ -41,13 +41,14 @@ class ApiClient {
 
   /** Lightweight status for one student (used by student phones instead of the full roster). */
   static async getMyAttendance(studentId) {
-    return this.request('/api/attendance/me?student_id=' + encodeURIComponent(studentId || ''));
+    return this.request('/api/attendance/me?student_id=' + encodeURIComponent(studentId || '') +
+      '&device_id=' + encodeURIComponent(this.deviceId()));
   }
 
   static async registerStudent(studentId, name) {
     return this.request('/api/students/register', {
       method: 'POST',
-      body: JSON.stringify({ student_id: studentId, name })
+      body: JSON.stringify({ student_id: studentId, name, device_id: this.deviceId() })
     });
   }
 
@@ -87,6 +88,26 @@ class ApiClient {
     });
   }
 
+  /**
+   * Random id for this phone/browser, kept in localStorage (shared by all tabs).
+   * Together with the server's cookie it enforces "one phone = one student" per session.
+   */
+  static deviceId() {
+    const KEY = 'cs302_device_id';
+    try {
+      let id = window.localStorage.getItem(KEY);
+      if (!id) {
+        id = (window.crypto && crypto.randomUUID) ? crypto.randomUUID().replace(/-/g, '')
+          : (Date.now().toString(36) + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2));
+        window.localStorage.setItem(KEY, id);
+      }
+      return id;
+    } catch (e) {
+      if (!ApiClient._memDeviceId) ApiClient._memDeviceId = Date.now().toString(36) + Math.random().toString(36).slice(2, 12);
+      return ApiClient._memDeviceId;
+    }
+  }
+
   static async verifyAttendance({ studentId, qrToken, lat, lng }) {
     return this.request('/api/attendance/verify', {
       method: 'POST',
@@ -94,8 +115,32 @@ class ApiClient {
         student_id: studentId,
         qr_token: qrToken,
         lat: parseFloat(lat),
-        lng: parseFloat(lng)
+        lng: parseFloat(lng),
+        device_id: this.deviceId()
       })
+    });
+  }
+
+  /** Location check without phone permission: current QR + same Wi-Fi as the instructor. */
+  static async verifyByNetwork({ studentId, qrToken }) {
+    return this.request('/api/attendance/verify-network', {
+      method: 'POST',
+      body: JSON.stringify({ student_id: studentId, qr_token: qrToken, device_id: this.deviceId() })
+    });
+  }
+
+  /** Phone blocks location: ask the instructor to approve (requires the current QR code). */
+  static async requestApproval({ studentId, qrToken, reason }) {
+    return this.request('/api/attendance/request-approval', {
+      method: 'POST',
+      body: JSON.stringify({ student_id: studentId, qr_token: qrToken, reason, device_id: this.deviceId() })
+    });
+  }
+
+  static async resolveApproval(studentId, approve) {
+    return this.request('/api/attendance/approve', {
+      method: 'POST',
+      body: JSON.stringify({ student_id: studentId, approve })
     });
   }
 

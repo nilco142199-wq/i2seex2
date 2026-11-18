@@ -110,6 +110,13 @@ class ClassSession:
         self.started_at: Optional[str] = datetime.now().strftime("%H:%M:%S")
         self.ended_at: Optional[str] = None
         self.attempts_log: List[CheckInAttempt] = []
+        # Anti buddy-punching: which phone checked in which student (reset every session)
+        self.device_bindings: Dict[str, str] = {}       # device_id -> student_id
+        self.device_registrations: Dict[str, str] = {}  # device_id -> student_id it self-registered
+        # Students whose phone blocks location can ask the instructor to approve them
+        self.pending_approvals: Dict[str, Dict[str, Any]] = {}
+        # Network addresses of the instructor's device(s) – for the "same Wi-Fi" location check
+        self.instructor_networks: List[str] = []
 
     def set_classroom_location(self, lat: float, lng: float, name: Optional[str] = None) -> None:
         """Updates the instructor's classroom base coordinates."""
@@ -164,7 +171,10 @@ class ClassSession:
         return re.sub(r"[\s\-_]", "", value).upper()
 
     def start(self) -> None:
-        """Opens the session for check-ins."""
+        """Opens the session for check-ins (and forgets the previous session's phones)."""
+        self.device_bindings = {}
+        self.device_registrations = {}
+        self.pending_approvals = {}
         self.is_active = True
         self.started_at = datetime.now().strftime("%H:%M:%S")
         self.ended_at = None

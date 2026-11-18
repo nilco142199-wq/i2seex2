@@ -63,17 +63,7 @@ class DataStore:
             qr_rotation_interval_seconds=20
         )
 
-        # Pre-seed a flagged spoofing attempt to demonstrate anti-spoofing dashboard
-        self._session.log_attempt(CheckInAttempt(
-            student_id="s105",
-            student_name="Omer Biton",
-            student_lat=32.113922,
-            student_lng=35.219744,
-            distance_meters=1380.5,
-            status="rejected_distance",
-            message="Geofence Violation: Student is 1380.5m away (Limit: 500m)",
-            timestamp="09:05:12"
-        ))
+        # No pre-seeded check-in attempts: the audit log only shows real attempts.
 
         # 1. Seed Students (120 Israeli names – see seed_students.py)
         for record in generate_roster(DEFAULT_CLASS_SIZE):

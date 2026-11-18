@@ -25,6 +25,9 @@ class AttendanceComponent {
     this.scannedQrToken = '';
     this.verificationFeedback = null;
     this.scanStatus = null;   // { type: 'info'|'success'|'error', message }
+    this.lockedStudentId = null;  // student this phone already checked in (one phone = one student)
+    this.approvalStatus = null;   // null | 'pending' | 'approved' (fallback when location is blocked)
+    this.lastGeoError = null;     // raw browser error, shown in "technical details"
     this.submitting = false;
     this.scanBusy = false;
 
@@ -64,9 +67,11 @@ class AttendanceComponent {
     try {
       const info = await ApiClient.request('/api/server-info');
       QREngine.lanOrigin = info.lan_origin || null;
+      window.SERVER_MODE = info.mode || 'http';
     } catch (e) { QREngine.lanOrigin = null; }
 
     await this.fetchData();
+    if (this.state.currentRole === 'student') await this.syncDeviceStatus();
     this.startQrAutoRefresh();
     this.render();
   }
@@ -105,18 +110,36 @@ class AttendanceComponent {
 
       // Student background poll: only my own record + session status
       const me = await ApiClient.getMyAttendance(this.state.currentStudentId);
-      const prev = JSON.stringify([this.session && this.session.is_active, this.currentStudentRecord()]);
+      const prev = JSON.stringify([this.session && this.session.is_active, this.currentStudentRecord(), this.lockedStudentId, this.approvalStatus]);
+      this.applyDeviceStatus(me);
       if (me.session) this.session = { ...this.session, ...me.session };
       if (me.student) {
         const idx = this.data.students.findIndex(st => st.student_id === me.student.student_id);
         if (idx >= 0) this.data.students[idx] = me.student; else this.data.students.push(me.student);
       }
       this.refreshStudentDistance();
-      return prev !== JSON.stringify([this.session && this.session.is_active, this.currentStudentRecord()]);
+      return prev !== JSON.stringify([this.session && this.session.is_active, this.currentStudentRecord(), this.lockedStudentId, this.approvalStatus]);
     } catch (err) {
       console.error('Failed to load attendance data:', err);
       return false;
     }
+  }
+
+  /** Server says which student this phone belongs to (this session) and the approval state. */
+  applyDeviceStatus(me) {
+    if (!me) return;
+    this.lockedStudentId = me.device_student_id || null;
+    if (this.lockedStudentId && this.state.currentStudentId !== this.lockedStudentId) {
+      this.state.currentStudentId = this.lockedStudentId; // silent switch, no extra render
+      AppState.storageSet('cs302_student_id', this.lockedStudentId);
+    }
+    this.approvalStatus = me.approval_status || null;
+  }
+
+  async syncDeviceStatus() {
+    try {
+      this.applyDeviceStatus(await ApiClient.getMyAttendance(this.state.currentStudentId));
+    } catch (e) { /* offline – ignore */ }
   }
 
   currentStudentRecord() {
@@ -356,8 +379,10 @@ class AttendanceComponent {
     this.render();
 
     if (!this.studentGps.acquired) {
-      const ok = await this.handleAcquireStudentGPS();
-      if (!ok) return; // GPS error is already displayed
+      // Location is a separate step: never requested in the middle of the QR flow
+      this.scanStatus = { type: 'success', message: '✅ QR code scanned. Now do step 1: tap <strong>📍 Check my location</strong>, then <strong>Verify</strong>.' };
+      this.render();
+      return;
     }
     await this.handleSubmitVerification();
   }
@@ -500,65 +525,141 @@ class AttendanceComponent {
       empty.remove();
     }
   }
-  /** Acquires the device GPS position. Resolves true on success. */
-  handleAcquireStudentGPS() {
-    return new Promise((resolve) => {
-      const fail = (msg) => {
-        this.studentGps = { ...this.studentGps, status: { type: 'error', message: msg } };
-        this.render();
-        resolve(false);
-      };
-
-      if (!window.isSecureContext) {
-        return fail('📍 Location is blocked because the page is opened over plain http. Use https:// (server --https) or localhost — or use the testing simulators below.');
-      }
-      if (!navigator.geolocation) {
-        return fail('📍 This browser does not support geolocation. Use the testing simulators below.');
-      }
-
-      this.studentGps = { ...this.studentGps, status: { type: 'info', message: '📡 Getting your location… (allow the location prompt)' } };
-      this.render();
-
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          const lat = parseFloat(pos.coords.latitude.toFixed(6));
-          const lng = parseFloat(pos.coords.longitude.toFixed(6));
-          const dist = calculateHaversineDistance(this.session.classroom_lat, this.session.classroom_lng, lat, lng);
-          const accuracy = Math.round(pos.coords.accuracy || 0);
-          this.studentGps = {
-            lat, lng, acquired: true, isSimulated: false, distance: dist, accuracy,
-            status: { type: 'success', message: `📍 Location acquired (±${accuracy}m accuracy).` }
-          };
-          this.render();
-          resolve(true);
-        },
-        (err) => {
-          const messages = {
-            1: '🚫 Location permission denied. Allow location access for this site (🔒/ⓘ icon in the address bar → Location → Allow) and try again.',
-            2: '📍 Your position is unavailable. Turn on Location Services / Wi-Fi and try again.',
-            3: '⏱️ Getting your location timed out. Move near a window or try again.'
-          };
-          fail(messages[err.code] || ('📍 Could not get location: ' + err.message));
-        },
-        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
-      );
-    });
+  /** Which browser/OS is this? Used to show the right "how to allow location" steps. */
+  static detectBrowserEnv() {
+    const ua = navigator.userAgent || '';
+    const isIOS = /iPhone|iPad|iPod/i.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const isAndroid = /Android/i.test(ua);
+    // In-app browsers (Google Lens/Google app, WhatsApp, Instagram, Facebook…) often block location
+    const inAppMatch = ua.match(/\b(GSA|FBAN|FBAV|Instagram|Line|WhatsApp|Snapchat|TikTok|musical_ly)\b/i);
+    const androidWebView = isAndroid && /; wv\)/.test(ua);
+    const inApp = Boolean(inAppMatch) || androidWebView;
+    const inAppName = inAppMatch ? ({ GSA: 'the Google app / Lens', FBAN: 'Facebook', FBAV: 'Facebook' }[inAppMatch[1]] || inAppMatch[1]) : 'another app';
+    return { isIOS, isAndroid, inApp, inAppName };
   }
 
-  handleSimulateStudentGPS(isNear) {
-    if (!this.session) return;
-    const baseLat = this.session.classroom_lat;
-    const baseLng = this.session.classroom_lng;
+  /** Step-by-step help for a denied location permission, per platform. */
+  locationDeniedHelp() {
+    const env = AttendanceComponent.detectBrowserEnv();
+    const url = window.location.origin + '/?role=student';
+    const copyBtn = `<button type="button" data-copy-url="${url}" class="btn-copy-url underline font-semibold">copy the link</button>`;
+    let steps;
+    if (env.inApp) {
+      steps = `
+        <p><strong>This page is open inside ${env.inAppName}</strong>, which doesn't allow location for websites.</p>
+        <p>Open it in ${env.isIOS ? '<strong>Safari</strong>' : '<strong>Chrome</strong>'}: tap <strong>⋮</strong> / the share icon → <strong>"Open in ${env.isIOS ? 'Safari' : 'Chrome'}"</strong> (or ${copyBtn} and paste it in the browser).</p>`;
+    } else if (env.isIOS) {
+      const selfSigned = window.SERVER_MODE === 'https-self-signed';
+      steps = `${selfSigned ? `
+        <p class="p-2 rounded-lg bg-rose-100"><strong>This link uses the self-signed certificate (<code>--https</code>). iPhone Safari blocks location on such sites.</strong>
+        Ask the instructor to restart with <code>python3 server.py --tunnel</code> and open the new https://….trycloudflare.com link.</p>` : ''}
+        <ol class="list-decimal ms-4 space-y-0.5">
+          <li><strong>Settings → Privacy &amp; Security → Location Services</strong> → <strong>On</strong>, then <strong>Safari Websites</strong> → <strong>"While Using the App"</strong>.</li>
+          <li><strong>Settings → Apps → Safari → Location</strong> (older iOS: Settings → Safari → Location) → <strong>Ask</strong> or <strong>Allow</strong> — not "Deny".</li>
+          <li>In Safari tap <strong>ᴀA</strong> left of the address → <strong>Website Settings → Location → Ask</strong>.</li>
+          <li>Close this tab, open the link again, tap <strong>📍 Check my location</strong> and choose <strong>Allow</strong>.</li>
+        </ol>
+        <p class="opacity-80">Using Chrome on iPhone? Settings → Apps → Chrome → Location → "While Using the App". Screen Time can also lock location: Settings → Screen Time → Content &amp; Privacy Restrictions → Location Services → Allow Changes.</p>`;
+    } else if (env.isAndroid) {
+      steps = `
+        <ol class="list-decimal ms-4 space-y-0.5">
+          <li>Turn on <strong>Location</strong> in the quick settings (swipe down from the top).</li>
+          <li>In Chrome tap the <strong>🔒 / ⚙ icon</strong> left of the address → <strong>Permissions → Location → Allow</strong>.</li>
+          <li>Still blocked? <strong>Settings → Apps → Chrome → Permissions → Location → "Allow only while using the app"</strong>.</li>
+          <li>Reload this page and tap <strong>📍 Check my location</strong> — or use <strong>📶 Check my location by Wi-Fi</strong> below.</li>
+        </ol>`;
+    } else {
+      steps = `
+        <ol class="list-decimal ms-4 space-y-0.5">
+          <li>Click the <strong>🔒 / ⓘ icon</strong> left of the address → <strong>Location → Allow</strong>, then reload.</li>
+          <li>Mac: <strong>System Settings → Privacy &amp; Security → Location Services</strong> → enable your browser.</li>
+        </ol>`;
+    }
+    return `<div class="space-y-1.5"><p class="font-bold">🚫 Location access is blocked for this site.</p>${steps}</div>`;
+  }
 
-    // ~28 m north of the classroom, or ~900 m away
-    const lat = parseFloat((baseLat + (isNear ? 0.00025 : 0.008)).toFixed(6));
-    const lng = parseFloat((baseLng + (isNear ? 0 : 0.002)).toFixed(6));
-    const dist = calculateHaversineDistance(baseLat, baseLng, lat, lng);
-    this.studentGps = {
-      lat, lng, acquired: true, isSimulated: true, distance: dist,
-      status: { type: 'info', message: `🧪 Simulated location: ${isNear ? 'inside the classroom' : 'at home'} (${dist.toFixed(0)}m).` }
+  async getGeoPermissionState() {
+    try {
+      if (!navigator.permissions || !navigator.permissions.query) return 'unknown';
+      const res = await navigator.permissions.query({ name: 'geolocation' });
+      return res.state; // 'granted' | 'prompt' | 'denied'
+    } catch (e) {
+      return 'unknown'; // Safari < 16 etc.
+    }
+  }
+
+  getPosition(options) {
+    return new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, reject, options));
+  }
+
+  /**
+   * Acquires the device position. Resolves true on success.
+   * IMPORTANT: getCurrentPosition() is called synchronously (no await before it) so that, when this
+   * runs inside a tap handler, Safari still treats it as a user action and shows the permission prompt.
+   * permissions.query() is only used afterwards for diagnostics – Safari can report "prompt" while the
+   * setting is actually "Deny" (and vice versa), so it must never block the request.
+   */
+  handleAcquireStudentGPS() {
+    if (this.geoInFlight) return this.geoInFlight;
+
+    const fail = (message, extra = {}) => {
+      this.studentGps = { ...this.studentGps, status: { type: 'error', message, ...extra } };
+      this.render();
+      return false;
     };
+    if (!window.isSecureContext) {
+      return Promise.resolve(fail('📍 Location is blocked because the page is opened over plain http. Open the https:// link (python3 server.py --tunnel).'));
+    }
+    if (!navigator.geolocation) {
+      return Promise.resolve(fail('📍 This browser does not support location. Open the link in Safari or Chrome.'));
+    }
+
+    const ask = (options) => new Promise((resolve, reject) =>
+      navigator.geolocation.getCurrentPosition(resolve, reject, options));
+
+    // ↓ first call happens right now, synchronously inside the tap
+    const firstTry = ask({ enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 });
+
+    this.studentGps = { ...this.studentGps, status: { type: 'info', message: '📡 Getting your location… tap <strong>Allow</strong> if the phone asks.' } };
     this.render();
+
+    const denied = async (err) => {
+      const permission = await this.getGeoPermissionState();
+      this.lastGeoError = { code: err.code, message: err.message, permission };
+      return fail(this.locationDeniedHelp(), { denied: true });
+    };
+
+    this.geoInFlight = (async () => {
+      let pos;
+      try {
+        pos = await firstTry;
+      } catch (err) {
+        if (err.code === 1) return denied(err);
+        try {
+          // GPS slow/unavailable indoors → faster network-based position (permission already granted)
+          pos = await ask({ enableHighAccuracy: false, timeout: 20000, maximumAge: 120000 });
+        } catch (err2) {
+          if (err2.code === 1) return denied(err2);
+          this.lastGeoError = { code: err2.code, message: err2.message, permission: await this.getGeoPermissionState() };
+          return fail(err2.code === 3
+            ? '⏱️ Getting your location timed out. Move near a window, make sure Location is on, and tap <strong>📍 Check my location</strong> again.'
+            : '📍 Your position is unavailable. Turn on Location (GPS) and Wi-Fi, then tap <strong>📍 Check my location</strong> again.');
+        }
+      }
+      this.lastGeoError = null;
+      const lat = parseFloat(pos.coords.latitude.toFixed(6));
+      const lng = parseFloat(pos.coords.longitude.toFixed(6));
+      const dist = calculateHaversineDistance(this.session.classroom_lat, this.session.classroom_lng, lat, lng);
+      const accuracy = Math.round(pos.coords.accuracy || 0);
+      this.studentGps = {
+        lat, lng, acquired: true, isSimulated: false, distance: dist, accuracy,
+        status: { type: 'success', message: `📍 Location acquired (±${accuracy}m accuracy).` }
+      };
+      this.render();
+      return true;
+    })().finally(() => { this.geoInFlight = null; });
+
+    return this.geoInFlight;
   }
 
   async handleSubmitVerification() {
@@ -571,12 +672,9 @@ class AttendanceComponent {
       return;
     }
     if (!this.studentGps.acquired) {
-      const ok = await this.handleAcquireStudentGPS();
-      if (!ok) {
-        this.verificationFeedback = { success: false, reason: 'missing_gps', message: 'Your location is required to check in. Allow location access (or use a simulator while testing) and press Verify again.' };
-        this.render();
-        return;
-      }
+      this.verificationFeedback = { success: false, reason: 'missing_gps', message: 'Do step 1 first: tap 📍 Check my location. (If your phone blocks location, use 📶 Check my location by Wi-Fi there.)' };
+      this.render();
+      return;
     }
 
     this.submitting = true;
@@ -589,7 +687,13 @@ class AttendanceComponent {
         lng: this.studentGps.lng
       });
       this.verificationFeedback = res;
+      if (res.reason === 'device_already_used' && res.device_student_id) {
+        this.lockedStudentId = res.device_student_id;
+        this.state.currentStudentId = res.device_student_id;
+        AppState.storageSet('cs302_student_id', res.device_student_id);
+      }
       if (res.success) {
+        this.lockedStudentId = this.state.currentStudentId;
         this.scanStatus = null;
       } else if (res.reason === 'invalid_qr') {
         this.scannedQrToken = ''; // force a fresh scan
@@ -685,6 +789,7 @@ class AttendanceComponent {
    */
   renderInstructorView() {
     const breaches = this.data.flagged_remote_attempts || [];
+    const pendingApprovals = this.data.pending_approvals || [];
     const presentCount = this.data.present_count;
     const absentCount = this.data.absent_count;
     const totalEnrolled = this.data.total_enrolled;
@@ -870,6 +975,11 @@ class AttendanceComponent {
                 }">
                   🚨 Flagged Breaches (${breaches.length})
                 </button>
+                <button data-tab="approvals" class="btn-roster-tab px-3 py-1.5 rounded-xl text-xs font-bold transition ${
+                  this.activeRosterTab === 'approvals' ? 'bg-amber-500 text-white' : (pendingApprovals.length ? 'bg-amber-100 text-amber-800 animate-pulse' : 'bg-slate-100 text-slate-600 hover:bg-slate-200')
+                }">
+                  🙋 Approvals (${pendingApprovals.length})
+                </button>
               </div>
 
               <div class="flex items-center gap-2 flex-wrap">
@@ -877,9 +987,6 @@ class AttendanceComponent {
                   class="px-3 py-1.5 border border-slate-200 rounded-xl text-xs w-44 focus:ring-2 focus:ring-indigo-500">
                 <button id="btn-export-csv" class="px-3 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-xl text-xs font-medium transition inline-flex items-center gap-1">
                   <span>📥</span> Export CSV
-                </button>
-                <button id="btn-photo-scan" class="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-xl text-xs font-semibold transition inline-flex items-center gap-1">
-                  <span>📸</span> Face Scan Mock
                 </button>
               </div>
             </div>
@@ -919,7 +1026,7 @@ class AttendanceComponent {
                         </td>
                         <td class="py-3.5 px-6">
                           <span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-50 text-indigo-700">
-                            ${s.check_in_method === 'qr_gps' ? `QR Code + GPS (≤${this.radiusM()}m)` : s.check_in_method}
+                            ${s.check_in_method === 'qr_gps' ? `QR Code + GPS (≤${this.radiusM()}m)` : s.check_in_method === 'instructor_approved' ? 'QR Code + instructor approval' : s.check_in_method === 'qr_network' ? 'QR Code + classroom Wi-Fi' : s.check_in_method}
                           </span>
                         </td>
                         <td class="py-3.5 px-6 text-right">
@@ -973,11 +1080,34 @@ class AttendanceComponent {
               </div>
             ` : ''}
 
+            <!-- Tab Content: Manual approvals (phone location blocked) -->
+            ${this.activeRosterTab === 'approvals' ? `
+              <div class="p-4 space-y-3">
+                <div class="text-xs text-slate-500">
+                  These students scanned the <strong>current QR code</strong> but their phone won't share its location. Approve only students you can see in the room.
+                </div>
+                ${pendingApprovals.length === 0 ? `
+                  <div class="p-8 text-center text-slate-400 text-xs">No pending requests.</div>
+                ` : pendingApprovals.map(r => `
+                  <div class="p-3.5 rounded-xl border border-amber-200 bg-amber-50/50 flex items-center justify-between text-xs gap-3">
+                    <div class="space-y-0.5">
+                      <div class="font-bold text-slate-900">${r.student_name} <span class="font-mono text-[10px] text-slate-500">(${r.student_id})</span></div>
+                      <div class="text-amber-800">${r.reason} · ${r.requested_at}</div>
+                    </div>
+                    <div class="flex gap-1.5 shrink-0">
+                      <button data-id="${r.student_id}" data-approve="1" class="btn-resolve-approval px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold">✓ Approve</button>
+                      <button data-id="${r.student_id}" data-approve="0" class="btn-resolve-approval px-3 py-1.5 rounded-lg bg-white border border-rose-200 text-rose-700 font-semibold">✕ Reject</button>
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            ` : ''}
+
             <!-- Tab Content: Flagged Remote Breaches -->
             ${this.activeRosterTab === 'breaches' ? `
               <div class="p-4 space-y-3">
                 <div class="text-xs text-slate-500">
-                  Audit log of students who attempted to check in with an active QR code but were <strong>outside the ${this.radiusM()}-meter geofence</strong>:
+                  Blocked check-ins: students <strong>outside the ${this.radiusM()}-meter geofence</strong>, and phones that tried to check in <strong>a second student</strong>:
                 </div>
                 ${breaches.length === 0 ? `
                   <div class="p-8 text-center text-slate-400 text-xs">No geofence violations detected.</div>
@@ -987,13 +1117,13 @@ class AttendanceComponent {
                       <div class="flex items-center gap-2">
                         <span class="font-bold text-slate-900">${b.student_name}</span>
                         <span class="font-mono text-[10px] text-slate-500">(${b.student_id})</span>
-                        <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-800">BLOCKED</span>
+                        <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-800">${b.status === 'rejected_device' ? 'SAME PHONE' : 'BLOCKED'}</span>
                       </div>
                       <div class="text-rose-700 font-medium">${b.message}</div>
                     </div>
                     <div class="text-right font-mono text-slate-500 text-[11px]">
                       <div>${b.timestamp}</div>
-                      <div class="text-rose-600 font-bold">${b.distance_meters.toFixed(1)}m away</div>
+                      ${b.status === 'rejected_device' ? '<div class="text-rose-600 font-bold">📵 buddy check-in</div>' : `<div class="text-rose-600 font-bold">${b.distance_meters.toFixed(1)}m away</div>`}
                     </div>
                   </div>
                 `).join('')}
@@ -1003,6 +1133,85 @@ class AttendanceComponent {
         </div>
       </div>
     `;
+  }
+
+  /** Fallback when the phone refuses location: request instructor approval. */
+  renderApprovalBox(gps, isPresent) {
+    if (isPresent) return '';
+    if (this.approvalStatus === 'pending') {
+      return `<div class="text-[11px] p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900">
+        ⏳ <strong>Waiting for the instructor to approve you.</strong> This page updates automatically.</div>`;
+    }
+    if (!gps.status || gps.status.type !== 'error') return '';
+    const e = this.lastGeoError || {};
+    return `
+      <div class="text-[11px] p-3 rounded-xl bg-white border border-slate-200 space-y-2">
+        <div class="text-slate-700"><strong>Location blocked on this phone? No problem.</strong> Scan/type the current code in step 2, then:</div>
+        <button id="btn-verify-network" class="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold">📶 Check my location by Wi-Fi</button>
+        <div class="text-slate-500">Works without location permission: your phone must be on the <strong>same Wi-Fi as the instructor</strong> (turn off mobile data).</div>
+        <button id="btn-request-approval" class="w-full py-2 bg-white hover:bg-amber-50 text-amber-700 border border-amber-300 rounded-xl font-bold">🙋 Still not working? Ask the instructor to approve me</button>
+        <details class="text-slate-500">
+          <summary class="cursor-pointer">Technical details (send to the developer)</summary>
+          <div class="font-mono text-[10px] break-all pt-1">
+            error code: ${e.code ?? '—'} · message: ${e.message || '—'}<br>
+            permission: ${e.permission || '—'} · secure: ${window.isSecureContext} · origin: ${window.location.origin}<br>
+            browser: ${navigator.userAgent}
+          </div>
+        </details>
+      </div>`;
+  }
+
+  async handleVerifyByNetwork() {
+    const input = this.container.querySelector('#input-student-qr-token');
+    if (input && input.value.trim()) this.scannedQrToken = QREngine.extractToken(input.value);
+    if (!this.scannedQrToken) {
+      this.verificationFeedback = { success: false, reason: 'missing_qr', message: 'First scan the QR code (or type the 6-character code) in step 2.' };
+      this.render();
+      return;
+    }
+    this.submitting = true;
+    this.render();
+    try {
+      const res = await ApiClient.verifyByNetwork({ studentId: this.state.currentStudentId, qrToken: this.scannedQrToken });
+      this.verificationFeedback = res;
+      if (res.reason === 'device_already_used' && res.device_student_id) {
+        this.lockedStudentId = res.device_student_id;
+        this.state.currentStudentId = res.device_student_id;
+      }
+      if (res.success) this.lockedStudentId = this.state.currentStudentId;
+      if (res.reason === 'invalid_qr') this.scannedQrToken = '';
+      await this.fetchData();
+    } catch (err) {
+      this.verificationFeedback = { success: false, reason: 'network_error', message: 'Could not reach the server: ' + err.message };
+    } finally {
+      this.submitting = false;
+      this.render();
+    }
+  }
+
+  async handleRequestApproval() {
+    const input = this.container.querySelector('#input-student-qr-token');
+    if (input && input.value.trim()) this.scannedQrToken = QREngine.extractToken(input.value);
+    if (!this.scannedQrToken) {
+      this.verificationFeedback = { success: false, reason: 'missing_qr', message: 'First scan the QR code (or type the 6-character code) in step 2 — it proves you are in the classroom right now.' };
+      this.render();
+      return;
+    }
+    try {
+      const e = this.lastGeoError || {};
+      const res = await ApiClient.requestApproval({
+        studentId: this.state.currentStudentId,
+        qrToken: this.scannedQrToken,
+        reason: `Location unavailable (code ${e.code ?? '?'}: ${e.message || 'unknown'})`
+      });
+      this.approvalStatus = res.status === 'approved' ? 'approved' : 'pending';
+      if (res.status !== 'approved') this.lockedStudentId = this.state.currentStudentId;
+      this.verificationFeedback = { success: res.status === 'approved', reason: 'approval', message: res.message };
+      await this.fetchData();
+    } catch (err) {
+      this.verificationFeedback = { success: false, reason: /phone/.test(err.message) ? 'device_already_used' : 'invalid_qr', message: err.message };
+    }
+    this.render();
   }
 
   renderScanStatus() {
@@ -1025,7 +1234,9 @@ class AttendanceComponent {
       student_not_found: '👤 Student not found',
       missing_qr: '🔳 QR code needed',
       missing_gps: '📍 Location needed',
-      network_error: '📶 Connection problem'
+      network_error: '📶 Connection problem',
+      device_already_used: '📵 This phone already checked in another student',
+      different_network: '📶 Not on the classroom Wi-Fi'
     };
     const title = fb.success ? '🎉 Attendance recorded!' : (titles[fb.reason] || '✕ Check-in rejected');
     const tone = fb.success
@@ -1075,7 +1286,7 @@ class AttendanceComponent {
             <img src="${student ? student.avatar : ''}" class="w-10 h-10 rounded-full border-2 border-indigo-400 bg-slate-800">
             <div class="flex-1 min-w-0">
               <label for="select-student" class="block text-[10px] uppercase tracking-wider text-slate-400 font-semibold">I am</label>
-              <select id="select-student" class="w-full bg-slate-800 text-white text-sm font-bold rounded-lg px-2 py-1 border border-slate-700">
+              <select id="select-student" ${this.lockedStudentId ? 'disabled' : ''} class="w-full bg-slate-800 text-white text-sm font-bold rounded-lg px-2 py-1 border border-slate-700 disabled:opacity-90">
                 ${[...students].sort((a, b) => a.name.localeCompare(b.name)).map(s => `<option value="${s.student_id}" ${s.student_id === this.state.currentStudentId ? 'selected' : ''}>${s.name} (${s.student_id})</option>`).join('')}
               </select>
             </div>
@@ -1083,6 +1294,10 @@ class AttendanceComponent {
               ${isPresent ? '✓ Present' : 'Not checked in'}
             </span>
           </div>
+          ${this.lockedStudentId ? `
+          <div class="text-[11px] bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-300">
+            🔒 This phone is registered to <strong class="text-white">${(students.find(x => x.student_id === this.lockedStudentId) || {}).name || this.lockedStudentId}</strong> for this session. Each student checks in from their own phone.
+          </div>` : `
           <input id="student-picker-search" type="search" autocomplete="off" placeholder="🔍 Find your name or ID (${students.length} students)…"
             class="w-full bg-slate-800 text-white placeholder-slate-400 text-xs rounded-lg px-3 py-2 border border-slate-700">
           <details id="student-register" class="text-[11px] text-slate-300" ${this.registerOpen ? 'open' : ''}>
@@ -1095,7 +1310,7 @@ class AttendanceComponent {
               <button id="btn-register-student" class="px-3 py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg font-bold text-xs">Add</button>
             </div>
             ${this.registerMessage ? `<div class="pt-1 ${this.registerMessage.ok ? 'text-emerald-300' : 'text-rose-300'}">${this.registerMessage.text}</div>` : ''}
-          </details>
+          </details>`}
           ${sessionOpen ? '' : `
             <div class="text-[11px] bg-amber-500/20 border border-amber-400/40 text-amber-200 rounded-lg px-3 py-2">
               ⏸️ The instructor hasn't started a session yet. Check-ins open when the instructor presses "Start Session".
@@ -1103,11 +1318,51 @@ class AttendanceComponent {
         </div>
 
         <div class="p-5 space-y-5 text-xs">
-          <!-- Step 1: QR code -->
+          <!-- Step 1: Location (separate from the QR / camera) -->
           <div class="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
             <div class="flex items-center justify-between">
               <span class="font-bold text-slate-800 flex items-center gap-1.5">
                 <span class="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px]">1</span>
+                Check your location
+              </span>
+              <span class="text-[10px] font-mono text-slate-400">must be ≤ ${radius.toFixed(0)}m</span>
+            </div>
+
+            <div class="text-slate-600">Classroom: <strong>${this.session.classroom_name}</strong> · <a href="/gps" target="_blank" rel="noopener" class="underline text-indigo-600">simple location test page</a></div>
+
+            <div class="p-3 rounded-xl border ${
+              !gps.acquired ? 'bg-white border-slate-200 text-slate-600'
+                : isWithinRange ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                : 'bg-rose-50 border-rose-200 text-rose-900'
+            }">
+              <div class="flex items-center justify-between">
+                <span class="font-semibold">Distance to classroom:</span>
+                <span id="student-distance" class="font-bold text-sm font-mono">${gps.acquired ? `${gps.distance.toFixed(1)}m` : 'not acquired'}</span>
+              </div>
+              <div class="text-[11px] mt-0.5">
+                ${!gps.acquired ? 'Location is requested automatically after the scan, or tap the button below.'
+                  : isWithinRange ? `✓ Within the ${radius.toFixed(0)}m classroom radius.`
+                  : `✕ More than ${radius.toFixed(0)}m away — check-in will be rejected.`}
+                ${gps.isSimulated ? ' <em>(simulated)</em>' : ''}
+              </div>
+            </div>
+            ${gps.status ? (gps.status.denied
+              ? `<div id="gps-denied-help" class="text-[11px] leading-relaxed p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-900">${gps.status.message}</div>`
+              : `<div class="text-[11px] ${gpsStatusStyles[gps.status.type] || ''}">${gps.status.message}</div>`) : ''}
+
+            ${this.renderApprovalBox(gps, isPresent)}
+
+            <button id="btn-acquire-student-gps" class="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold transition shadow-sm">
+              📍 ${gps.acquired ? 'Check my location again' : 'Check my location'}
+            </button>
+
+          </div>
+
+          <!-- Step 2: QR code (separate from location) -->
+          <div class="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
+            <div class="flex items-center justify-between">
+              <span class="font-bold text-slate-800 flex items-center gap-1.5">
+                <span class="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px]">2</span>
                 Scan the instructor's QR code
               </span>
               ${this.scannedQrToken ? '<span class="text-[10px] font-bold text-emerald-600">✓ Code ready</span>' : ''}
@@ -1143,51 +1398,6 @@ class AttendanceComponent {
               </button>
               <input id="input-qr-file-upload" type="file" accept="image/*" class="hidden">
             </div>
-          </div>
-
-          <!-- Step 2: Location -->
-          <div class="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
-            <div class="flex items-center justify-between">
-              <span class="font-bold text-slate-800 flex items-center gap-1.5">
-                <span class="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px]">2</span>
-                Share your location
-              </span>
-              <span class="text-[10px] font-mono text-slate-400">must be ≤ ${radius.toFixed(0)}m</span>
-            </div>
-
-            <div class="text-slate-600">Classroom: <strong>${this.session.classroom_name}</strong></div>
-
-            <div class="p-3 rounded-xl border ${
-              !gps.acquired ? 'bg-white border-slate-200 text-slate-600'
-                : isWithinRange ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
-                : 'bg-rose-50 border-rose-200 text-rose-900'
-            }">
-              <div class="flex items-center justify-between">
-                <span class="font-semibold">Distance to classroom:</span>
-                <span id="student-distance" class="font-bold text-sm font-mono">${gps.acquired ? `${gps.distance.toFixed(1)}m` : 'not acquired'}</span>
-              </div>
-              <div class="text-[11px] mt-0.5">
-                ${!gps.acquired ? 'Location is requested automatically after the scan, or tap the button below.'
-                  : isWithinRange ? `✓ Within the ${radius.toFixed(0)}m classroom radius.`
-                  : `✕ More than ${radius.toFixed(0)}m away — check-in will be rejected.`}
-                ${gps.isSimulated ? ' <em>(simulated)</em>' : ''}
-              </div>
-            </div>
-            ${gps.status ? `<div class="text-[11px] ${gpsStatusStyles[gps.status.type] || ''}">${gps.status.message}</div>` : ''}
-
-            <button id="btn-acquire-student-gps" class="w-full py-2 bg-white hover:bg-slate-100 text-indigo-700 border border-indigo-200 rounded-xl font-bold transition">
-              📍 ${gps.acquired && !gps.isSimulated ? 'Refresh my location' : 'Use my real location'}
-            </button>
-
-            <details id="student-test-tools" class="text-[11px] text-slate-500" ${this.testToolsOpen ? 'open' : ''}>
-              <summary class="cursor-pointer font-semibold">🧪 Testing tools (simulate location / codes)</summary>
-              <div class="grid grid-cols-2 gap-2 pt-2">
-                <button id="btn-sim-near" class="py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-xl font-semibold">🟢 In class (~30m)</button>
-                <button id="btn-sim-far" class="py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-200 rounded-xl font-semibold">🔴 At home (~900m)</button>
-                <button id="btn-capture-screen-qr" class="py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl font-semibold">⚡ Fill current code</button>
-                <button id="btn-simulate-stale-qr" class="py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-xl font-semibold">⚠️ Use expired code</button>
-              </div>
-            </details>
           </div>
 
           <!-- Step 3: Verify -->
@@ -1252,18 +1462,11 @@ class AttendanceComponent {
     // Student GPS Handlers
     const btnStudentGps = this.container.querySelector('#btn-acquire-student-gps');
     if (btnStudentGps) {
-      btnStudentGps.addEventListener('click', () => this.handleAcquireStudentGPS());
+      btnStudentGps.addEventListener('click', () => {
+        if (this.cameraActive) this.stopCameraScanner(); // location and camera never at the same time
+        this.handleAcquireStudentGPS();                    // getCurrentPosition() runs inside this tap
+      });
     }
-    const btnSimNear = this.container.querySelector('#btn-sim-near');
-    if (btnSimNear) {
-      btnSimNear.addEventListener('click', () => this.handleSimulateStudentGPS(true));
-    }
-    const btnSimFar = this.container.querySelector('#btn-sim-far');
-    if (btnSimFar) {
-      btnSimFar.addEventListener('click', () => this.handleSimulateStudentGPS(false));
-    }
-
-    // Camera Scanner Controls
     const btnStartCam = this.container.querySelector('#btn-start-camera');
     if (btnStartCam) {
       btnStartCam.addEventListener('click', () => this.startCameraScanner());
@@ -1289,31 +1492,6 @@ class AttendanceComponent {
     }
 
     // Testing shortcuts (student view)
-    const btnCapQr = this.container.querySelector('#btn-capture-screen-qr');
-    if (btnCapQr) {
-      btnCapQr.addEventListener('click', async () => {
-        try {
-          this.qrInfo = await ApiClient.getSessionQR();
-        } catch (e) { /* use cached */ }
-        if (this.qrInfo && this.qrInfo.short_code) {
-          this.scannedQrToken = this.qrInfo.short_code;
-          this.verificationFeedback = null;
-          this.scanStatus = { type: 'info', message: `🧪 Filled in the current code (${this.qrInfo.short_code}) for testing without a camera.` };
-          this.render();
-        }
-      });
-    }
-
-    const btnStaleQr = this.container.querySelector('#btn-simulate-stale-qr');
-    if (btnStaleQr) {
-      btnStaleQr.addEventListener('click', () => {
-        this.scannedQrToken = 'QR_cs302_lec08_1_0000000000000000';
-        this.verificationFeedback = null;
-        this.scanStatus = { type: 'info', message: '🧪 Loaded an expired token to test the anti-screenshot rejection.' };
-        this.render();
-      });
-    }
-
     // Manual code input: keep state in sync so re-renders never wipe what the student typed
     const tokenInput = this.container.querySelector('#input-student-qr-token');
     if (tokenInput) {
@@ -1323,11 +1501,6 @@ class AttendanceComponent {
       tokenInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') this.handleSubmitVerification();
       });
-    }
-
-    const testTools = this.container.querySelector('#student-test-tools');
-    if (testTools) {
-      testTools.addEventListener('toggle', () => { this.testToolsOpen = testTools.open; });
     }
 
     // Roster search (instructor) – filters rows in place, no re-render
@@ -1372,6 +1545,36 @@ class AttendanceComponent {
     if (btnRegister) {
       btnRegister.addEventListener('click', () => this.handleRegisterStudent());
     }
+
+    const btnNetwork = this.container.querySelector('#btn-verify-network');
+    if (btnNetwork) btnNetwork.addEventListener('click', () => this.handleVerifyByNetwork());
+
+    const btnApproval = this.container.querySelector('#btn-request-approval');
+    if (btnApproval) btnApproval.addEventListener('click', () => this.handleRequestApproval());
+
+    // Instructor: approve / reject manual requests
+    this.container.querySelectorAll('.btn-resolve-approval').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        const id = e.currentTarget.getAttribute('data-id');
+        const approve = e.currentTarget.getAttribute('data-approve') === '1';
+        try {
+          await ApiClient.resolveApproval(id, approve);
+          await this.fetchData();
+          this.render();
+        } catch (err) {
+          alert('Could not update the request: ' + err.message);
+        }
+      });
+    });
+
+    // "copy the link" (in the location help for in-app browsers)
+    this.container.querySelectorAll('.btn-copy-url').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const url = btn.getAttribute('data-copy-url');
+        try { await navigator.clipboard.writeText(url); btn.textContent = 'link copied ✓'; }
+        catch (e) { window.prompt('Copy this link:', url); }
+      });
+    });
 
     // Student profile selector
     const selectStudent = this.container.querySelector('#select-student');

@@ -102,6 +102,7 @@ The terminal prints the phone address, e.g. `📱 From a phone on the same Wi-Fi
 
 - Use **`https://`** and port **`8443`** (not 8000).
 - On first visit each device shows a certificate warning (expected, local certificate): Chrome/Android → *Advanced → Proceed*; iPhone → *Show Details → visit this website*.
+- ⚠️ **iPhone: location does not work in this mode** — Safari doesn't trust self-signed certificates, so it blocks location. For iPhones use **Option B (`--tunnel`)**. The app detects this and tells the student.
 - The instructor screen shows (under the QR) the exact address students must open, and the QR already points to it.
 - If the phone can't load the page at all, the network is blocking device-to-device traffic (common on university/guest Wi-Fi) or the Mac firewall is blocking Python → use **Option B**, or connect the laptop to a phone hotspot.
 
@@ -133,12 +134,15 @@ Stop the server with **Ctrl + C**. If you see *"Address already in use"*, anothe
    - a **QR code** that rotates every 20 s (countdown badge `🔄 Rotates in: Xs`),
    - a large **6-character code** (e.g. `K7Q2MX`) that students can type if their camera fails.
    - Use **Dynamic (20s)** / **Static** to change rotation mode.
-6. **Watch check-ins live:** the roster refreshes automatically every 5 seconds. With 100+ students use the **🔍 Search name or ID** box above the list; the tables scroll with a fixed header.
+6. **Everyone starts as "Not Checked In"** (0 / 120) — the numbers only change from real check-ins (or your manual *Mark Present*).
+7. **Watch check-ins live:** the roster refreshes automatically every 5 seconds. With 100+ students use the **🔍 Search name or ID** box above the list; the tables scroll with a fixed header.
    - **✓ Verified Present** — name, time, distance from class, method.
    - **⏳ Not Checked In** — includes a *Mark Present* manual override.
    - **🚨 Flagged Breaches** — attempts rejected for being outside 500 m.
    - **📥 Export CSV** downloads the list.
-7. Click **■ End Session** when class is over — from then on, students get *"No active session"*.
+8. **🙋 Approvals** — students whose phone refuses to share location (but who scanned the **current** QR) appear here. Approve only students you can see in the room.
+9. **🚨 Flagged Breaches** also lists **SAME PHONE** attempts — a phone that already checked in one student trying to check in another.
+10. Click **■ End Session** when class is over — from then on, students get *"No active session"*.
 
 > Tip: the **↗ Open Student Mode** button opens a student tab next to the instructor tab.
 
@@ -150,33 +154,42 @@ Stop the server with **Ctrl + C**. If you see *"Address already in use"*, anothe
    Each tab remembers its own role, so the instructor tab and student tab don't interfere.
 2. **Pick your name** in the *"I am"* dropdown at the top of the card (120 demo students with Israeli names). Type part of your name or ID in **🔍 Find your name** to jump to it.
    **Not on the list?** (e.g. real classmates trying it during the presentation) open **"Not on the list? Add yourself"**, enter your student ID and full name, tap **Add** — you're selected automatically.
-3. **Step 1 – Scan the QR code:**
-   - Tap **📷 Start Camera & Scan QR** and allow camera access.
-   - Point the camera at the instructor's QR code. When it's read you hear a beep, the camera closes and check-in starts automatically.
-   - **Camera not working?** Type the **6-character code** shown under the QR into the text field (upper/lower case and dashes don't matter), or use **📁 Scan from photo**.
+3. **Step 1 – Check your location** (separate from the QR – the camera is never open at the same time): tap **📍 Check my location** → **Allow** → the card shows your distance from Ariel University and ✓/✕ for the 500 m radius.
+   **Phone blocks location?** Tap **📶 Check my location by Wi-Fi** (no permission needed, phone on the same Wi-Fi as the instructor) or **🙋 Ask the instructor to approve me**.
+   Want to test location alone? Open **`/gps`** (e.g. `https://xxxx.trycloudflare.com/gps`) — a bare page with one button, no camera/QR. If it fails there, the phone's settings block location.
+4. **Step 2 – Scan the QR code:**
+   - Tap **📷 Start Camera & Scan QR** and allow camera access, point it at the instructor's QR code (beep = scanned).
+   - **Camera not working?** Type the **6-character code** shown under the QR, or use **📁 Scan from photo**.
    - *Phone shortcut:* scanning the QR with the phone's normal camera app opens Student Mode with the code already filled in.
-4. **Step 2 – Share your location:** after a scan the browser asks for location automatically (or tap **📍 Use my real location**). The card shows your distance from the classroom.
-5. **Step 3 – Verify:** tap **✅ Verify & Check In** (automatic after a camera scan). You'll see one of:
+5. **Step 3 – Verify:** tap **✅ Verify & Check In** (automatic after a camera scan if your location is already checked). You'll see one of:
 
 | Result | Meaning |
 |---|---|
 | 🎉 **Attendance recorded!** | QR valid **and** you are within 500 m. The instructor's list updates within 5 s. |
 | 📍 **Outside the 500 m classroom radius** | Valid code, but your GPS is too far away (logged as a breach). |
 | ⌛ **Invalid or expired QR code** | The code is wrong or older than ~40 s. Scan the current code again. |
+| 📵 **This phone already checked in another student** | Each phone can check in **one** student per session (see below). |
 | ⏸️ **No active session** | The instructor hasn't started (or has ended) the session. |
 | 🚫 / 📵 camera or location messages | Permission denied, no camera, camera in use, or page not on HTTPS — the message says how to fix it. |
 
-### Testing without walking around (single computer)
-Open **🧪 Testing tools** in the student card:
-- **🟢 In class (~30 m)** / **🔴 At home (~900 m)** — simulate a location instead of using real GPS.
-- **⚡ Fill current code** — fills the current code without a camera.
-- **⚠️ Use expired code** — checks that old screenshots are rejected.
+### Phone blocks location?
+A blocked location is a decision of the phone (iOS/Android settings) — no website can override it. So the app offers two ways that need **no location permission**:
+1. **📶 Check my location by Wi-Fi** — current QR code + the phone is on the **same network as the instructor's device** (same public IP, same LAN /24, or same IPv6 /64). Shown on the instructor screen as *QR Code + classroom Wi-Fi*.
+2. **🙋 Ask the instructor to approve me** — appears in the instructor's **🙋 Approvals** tab.
 
-Suggested test run:
-1. 🟢 In class + scan (or Fill current code) → **Verify** → *Attendance recorded*.
-2. Choose another student, 🔴 At home + current code → **Verify** → *Outside the 500 m radius* (appears in the instructor's 🚨 Flagged Breaches).
-3. ⚠️ Use expired code → **Verify** → *Invalid or expired QR code*.
+The student also sees the exact settings steps for their phone, and *Technical details* with the browser's exact error.
+
+### One phone = one student
+A phone that checked in a student is locked to that student for the rest of the session (the name picker is disabled). Trying to check in a classmate — from the UI or by calling the API directly — is rejected and logged as **SAME PHONE**. The phone is identified by **two** independent ids (a server cookie + an id in the browser's localStorage), so clearing one of them is not enough. Starting a new session releases all phones.
+*Limit:* a student with two phones, or who wipes all site data / uses a private window, gets a new identity; the rotating QR + GPS radius still require being in the class. Full proof would need university login (SSO).
+
+### Suggested test run
+1. On campus (within 500 m of Ariel University): scan → allow location → **Verify** → *Attendance recorded*.
+2. Same phone, try another student → *This phone already checked in another student* (instructor sees **SAME PHONE**).
+3. Phone with location blocked → **🙋 Ask the instructor to approve me** → instructor approves in **🙋 Approvals**.
 4. Instructor clicks **■ End Session**, student verifies again → *No active session*.
+
+The location rule itself is covered by one automated test: `TestLocation.test_distance_from_required_location`.
 
 ---
 
@@ -193,7 +206,7 @@ Suggested test run:
 
 Same-Wi-Fi alternative without installing anything: see [Option C](#option-c--phones-on-the-same-wi-fi-self-signed-https).
 
-> 💡 **Testing from home?** Your real location is outside the 500 m Ariel University radius, so a real-GPS check-in will correctly be *rejected*. To see a successful check-in off-campus, open **🧪 Testing tools → 🟢 In class (~30 m)** in Student Mode (or temporarily set the classroom to your own location with **📍 Auto-Fetch**, then pick the **Ariel University** preset again).
+> 💡 **Testing from home?** Your real location is outside the 500 m Ariel University radius, so a real-GPS check-in will correctly be *rejected*. To see a successful check-in off-campus, temporarily set the classroom to your own location with **📍 Auto-Fetch** on the instructor screen (pick the **Ariel University** preset again afterwards), or use **🙋 instructor approval**.
 >
 > Indoor phone GPS can be off by 20–50 m, so a student at the edge of campus may be rejected.
 
@@ -211,8 +224,10 @@ Same-Wi-Fi alternative without installing anything: see [Option C](#option-c--ph
 | "Camera is being used by another app" | Close Zoom/Teams/other tabs using the camera. |
 | QR not detected | Increase screen brightness, hold the phone 20–40 cm from the screen, keep the whole code inside the frame. Or type the 6-character code. |
 | "Invalid or expired QR code" | The code rotates every 20 s and is valid ~40 s. Scan the code currently shown. |
-| "Location permission denied" | Allow location for the site (same 🔒 icon). On macOS: *System Settings → Privacy & Security → Location Services* for your browser. |
-| Desktop GPS is inaccurate | Laptops locate via Wi-Fi and may be off by 100 m+. Use the 🧪 simulators for local testing. |
+| "🚫 Location access is blocked for this site" | The app shows the exact steps for your phone. In short: **iPhone** → Settings → Privacy & Security → Location Services **On** → *Safari Websites* → "While Using the App"; then in Safari **ᴀA → Website Settings → Location → Allow**. **Android** → Location on in quick settings; Chrome **🔒 → Permissions → Location → Allow** (and Settings → Apps → Chrome → Permissions → Location). Reload and tap **📍 Check my location**. |
+| Location blocked right after scanning the QR with the phone camera | On Android, Google Lens often opens the link **inside the Google app**, which blocks location. Tap ⋮ → **Open in Chrome** (the app detects this and tells you). Using the **📷 Start Camera** button inside the site avoids this. |
+| Desktop GPS is inaccurate | Laptops locate via Wi-Fi and may be off by 100 m+. Test check-in from a phone. |
+| iPhone: "Location access is blocked" even after changing settings | 1) Use the **`--tunnel`** link — Safari blocks location on the self-signed `--https` link. 2) **Settings → Apps → Safari → Location** must be *Ask* or *Allow* (not *Deny*). 3) **Settings → Privacy & Security → Location Services → Safari Websites → While Using the App**. 4) In Safari **ᴀA → Website Settings → Location → Ask**. 5) Close the tab, reopen the link, tap **📍 Check my location** → **Allow**. Still blocked? Use **🙋 Ask the instructor to approve me** and send the *Technical details* text to the developer. |
 | Page looks unstyled | Tailwind CSS loads from the internet; functionality still works offline. |
 
 ---
@@ -225,12 +240,12 @@ python3 -m unittest discover tests -v
 
 Expected ending:
 ```
-Ran 24 tests in 0.0XXs
+Ran 28 tests in 0.0XXs
 
 OK
 ```
 
-The tests cover the domain models, Haversine distance, QR rotation and the grace window, deep-link URLs and short codes, session start/end, the 500 m geofence, the 120-student Israeli roster, concurrent check-ins of the whole class, versioned polling, self-registration, and the REST router.
+The tests cover the domain models, QR rotation and the grace window, deep-link URLs and short codes, session start/end, **one location test** (`TestLocation.test_distance_from_required_location`: ~33 m from Ariel University is accepted, ~1 km is rejected), one-phone-per-student and the instructor-approval fallback, the 120-student roster, concurrent check-ins of the whole class, versioned polling, self-registration, and the REST router.
 
 ---
 
@@ -262,6 +277,7 @@ Failures: 0
 | **Polling traffic** | Student phones poll only their **own** status (`/api/attendance/me`, ~0.5 KB) every 10 s, and only for the open tab — not the whole class. The instructor polls every 5 s with `?since=<version>`; if nothing changed the server answers `{"unchanged": true}` (41 bytes) and the screen isn't redrawn. |
 | **Payload size** | The roster is sent once (no duplicated present/absent copies). Large JS libraries are cached by phones for a day. |
 | **Double taps / retries** | Check-in is idempotent: a second check-in returns *"already checked in"* without changing the original time. |
+| **Buddy check-ins** | One phone = one student per session (cookie + localStorage id), enforced on the server. |
 | **Real students not in the demo list** | `POST /api/students/register` lets a student add themselves (validated ID + name; an existing ID is reused, never duplicated). |
 | **Big rosters in the UI** | Instructor search + scrollable tables; student name search; avatars lazy-loaded. |
 | **Bounded memory** | The audit log keeps the latest 1,000 attempts. |
@@ -398,7 +414,7 @@ The system features an automated **Class Video Upload & Multi-Modal AI Summariza
 ├── server.py                      # Multi-threaded zero-dependency HTTP(S) server (--https, --host, --tunnel)
 ├── certs/                         # Auto-generated self-signed HTTPS certificate (git-ignored)
 ├── tests/
-│   ├── test_app.py                # 24 unit tests (models, QR, 500 m geofence, concurrency, API)
+│   ├── test_app.py                # 28 unit tests (models, QR, 1 location test, one-phone lock, concurrency, API)
 │   └── load_test.py               # 150-300 simultaneous students over HTTP
 ├── app/
 │   ├── models/                    # Encapsulated Domain Entities
@@ -455,16 +471,19 @@ The system features an automated **Class Video Upload & Multi-Modal AI Summariza
 | `POST` | `/api/session/end` | Instructor ends the session — further check-ins return `session_closed` |
 | `POST` | `/api/session/location` | Sets classroom GPS coordinates (`lat`, `lng`, `name`) |
 | `POST` | `/api/session/create` | Configures class session, radius (500m), and QR mode |
-| `POST` | `/api/attendance/verify` | **Dual-Factor verification** (`student_id`, `qr_token`, `lat`, `lng`). `qr_token` may be the raw token, the QR deep-link URL or the 6-char short code. Failure `reason`: `invalid_qr`, `distance_exceeded`, `session_closed`, `student_not_found`, `missing_gps` |
+| `POST` | `/api/attendance/verify` | **Dual-Factor verification** (`student_id`, `qr_token`, `lat`, `lng`). `qr_token` may be the raw token, the QR deep-link URL or the 6-char short code; `device_id` + the `cs302_device` cookie identify the phone. Failure `reason`: `invalid_qr`, `distance_exceeded`, `device_already_used`, `session_closed`, `student_not_found`, `missing_gps` |
 | `GET` | `/api/attendance` | Roster (`students`), counts, breach log and `version`. With `?since=<version>` returns `{"unchanged": true}` when nothing changed |
 | `GET` | `/api/attendance/me?student_id=…` | Lightweight status of one student + session state (used by student phones) |
-| `POST` | `/api/students/register` | Student adds themselves (`student_id`, `name`) |
+| `POST` | `/api/students/register` | Student adds themselves (`student_id`, `name`, `device_id`) — one per phone per session |
+| `POST` | `/api/attendance/verify-network` | Location check without phone permission: current `qr_token` + same Wi-Fi as the instructor (`student_id`, `device_id`) |
+| `POST` | `/api/attendance/request-approval` | Phone can't share location: request instructor approval (`student_id`, current `qr_token`, `device_id`) |
+| `POST` | `/api/attendance/approve` | Instructor approves/rejects a request (`student_id`, `approve`) |
 | `GET` | `/api/attendance/stats` | Detailed statistics and audit trail of remote attempts |
 | `POST` | `/api/video/upload` | **Uploads lecture recording & triggers multi-modal LLM synthesis** |
 | `GET` | `/api/video/list` | Returns library of uploaded lecture videos and summaries |
 | `GET` | `/api/video/detail?id=...` | Detailed summary, chapters, and transcript for a video |
 | `POST` | `/api/video/qa` | **Interactive AI Q&A assistant for uploaded video** |
-| `POST` | `/api/attendance/photo-scan` | Computer vision facial recognition simulation |
+| `POST` | `/api/attendance/photo-scan` | Facial recognition simulation (API only — removed from the UI because it marks students present without a real check-in) |
 | `GET` | `/api/feedback` | Categorized student comments and questions |
 | `POST` | `/api/feedback` | Submits new live/offline question |
 | `GET` | `/api/poll` | Active poll & animated percentage results |
