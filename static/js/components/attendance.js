@@ -71,28 +71,65 @@ class AttendanceComponent {
     this.render();
   }
 
-  async fetchData() {
+  /**
+   * Loads attendance data. Built for 100+ concurrent clients:
+   * - Instructor: sends its last roster version; the server answers {unchanged:true} (a few bytes)
+   *   when nothing happened, so polling every few seconds is cheap.
+   * - Student: loads the roster once (for the name picker), then only polls its own status.
+   * @returns {Promise<boolean>} true when something changed (caller re-renders)
+   */
+  async fetchData({ full = false } = {}) {
     try {
-      const [rosterRes, qrRes] = await Promise.all([
-        ApiClient.getAttendance(),
-        ApiClient.getSessionQR()
-      ]);
-      this.data = rosterRes;
-      this.session = rosterRes.session;
-      this.qrInfo = qrRes;
-      this.currentQrCountdown = qrRes.seconds_remaining || 20;
+      const isLecturer = this.state.currentRole === 'lecturer';
+      if (isLecturer || full || !this.data || !this.data.students) {
+        const since = (!full && this.data && this.data.version !== undefined) ? this.data.version : undefined;
+        const requests = [ApiClient.getAttendance(since)];
+        if (isLecturer) requests.push(ApiClient.getSessionQR());
+        const [rosterRes, qrRes] = await Promise.all(requests);
 
-      // Update student distance if coords available
-      if (this.session && this.studentGps.acquired) {
-        this.studentGps.distance = calculateHaversineDistance(
-          this.session.classroom_lat,
-          this.session.classroom_lng,
-          this.studentGps.lat,
-          this.studentGps.lng
-        );
+        let changed = false;
+        if (!rosterRes.unchanged) {
+          this.data = rosterRes;
+          this.session = rosterRes.session;
+          changed = true;
+        }
+        if (qrRes) {
+          const qrChanged = !this.qrInfo || this.qrInfo.token !== qrRes.token;
+          this.qrInfo = qrRes;
+          this.currentQrCountdown = qrRes.seconds_remaining || 20;
+          if (qrChanged) this.updateQrDisplayOnly();
+        }
+        this.refreshStudentDistance();
+        return changed;
       }
+
+      // Student background poll: only my own record + session status
+      const me = await ApiClient.getMyAttendance(this.state.currentStudentId);
+      const prev = JSON.stringify([this.session && this.session.is_active, this.currentStudentRecord()]);
+      if (me.session) this.session = { ...this.session, ...me.session };
+      if (me.student) {
+        const idx = this.data.students.findIndex(st => st.student_id === me.student.student_id);
+        if (idx >= 0) this.data.students[idx] = me.student; else this.data.students.push(me.student);
+      }
+      this.refreshStudentDistance();
+      return prev !== JSON.stringify([this.session && this.session.is_active, this.currentStudentRecord()]);
     } catch (err) {
       console.error('Failed to load attendance data:', err);
+      return false;
+    }
+  }
+
+  currentStudentRecord() {
+    const list = (this.data && this.data.students) || [];
+    return list.find(st => st.student_id === this.state.currentStudentId) || null;
+  }
+
+  refreshStudentDistance() {
+    if (this.session && this.studentGps.acquired) {
+      this.studentGps.distance = calculateHaversineDistance(
+        this.session.classroom_lat, this.session.classroom_lng,
+        this.studentGps.lat, this.studentGps.lng
+      );
     }
   }
 
@@ -102,8 +139,16 @@ class AttendanceComponent {
   }
 
   /** Called by the App every few seconds after fetchData(): keeps the instructor roster live. */
-  onBackgroundRefresh() {
-    if (this.state.currentRole !== 'lecturer') return; // never disturb the student's camera
+  onBackgroundRefresh(changed = true) {
+    if (!changed) return;
+    if (this.state.currentRole !== 'lecturer') {
+      // Student: update the status badge only when idle (never disturb an open camera / form)
+      if (this.cameraActive || this.submitting) return;
+      const active = document.activeElement;
+      if (active && this.container.contains(active) && /INPUT|SELECT|TEXTAREA/.test(active.tagName)) return;
+      this.render();
+      return;
+    }
     const active = document.activeElement;
     if (active && this.container.contains(active) && /INPUT|SELECT|TEXTAREA/.test(active.tagName)) return;
     this.render();
@@ -113,6 +158,7 @@ class AttendanceComponent {
     if (this.countdownTimer) clearInterval(this.countdownTimer);
 
     this.countdownTimer = setInterval(async () => {
+      if (this.state.currentRole !== 'lecturer') return; // students never need the live QR
       if (this.session && this.session.qr_mode === 'dynamic' && this.session.is_active !== false) {
         this.currentQrCountdown--;
         if (this.currentQrCountdown <= 0) {
@@ -411,6 +457,49 @@ class AttendanceComponent {
   // ==========================================
   // STUDENT HANDLERS
   // ==========================================
+  async handleRegisterStudent() {
+    const id = (this.container.querySelector('#register-id') || {}).value || '';
+    const name = (this.container.querySelector('#register-name') || {}).value || '';
+    try {
+      const res = await ApiClient.registerStudent(id.trim(), name.trim());
+      this.registerMessage = {
+        ok: true,
+        text: res.created ? `✓ Added ${res.student.name}. You can check in now.` : `✓ ${res.student.name} is already on the list — selected.`
+      };
+      this.registerOpen = false;
+      await this.fetchData({ full: true });
+      this.state.setCurrentStudent(res.student.student_id); // re-renders
+    } catch (err) {
+      this.registerMessage = { ok: false, text: '✕ ' + err.message };
+      this.registerOpen = true;
+      this.render();
+    }
+  }
+
+  applyRosterFilter() {
+    if (!this.container) return;
+    const q = (this.rosterFilter || '').trim().toLowerCase();
+    const rows = this.container.querySelectorAll('.roster-row');
+    let shown = 0;
+    rows.forEach(row => {
+      const hit = !q || row.getAttribute('data-search').includes(q);
+      row.style.display = hit ? '' : 'none';
+      if (hit) shown++;
+    });
+    let empty = this.container.querySelector('#roster-empty');
+    if (q && shown === 0 && rows.length) {
+      if (!empty) {
+        const table = rows[0].closest('table');
+        empty = document.createElement('div');
+        empty.id = 'roster-empty';
+        empty.className = 'p-6 text-center text-xs text-slate-400';
+        table.parentNode.appendChild(empty);
+      }
+      empty.textContent = `No student matches "${this.rosterFilter}".`;
+    } else if (empty) {
+      empty.remove();
+    }
+  }
   /** Acquires the device GPS position. Resolves true on success. */
   handleAcquireStudentGPS() {
     return new Promise((resolve) => {
@@ -601,6 +690,11 @@ class AttendanceComponent {
     const totalEnrolled = this.data.total_enrolled;
     const rate = this.data.attendance_rate;
     const sessionOpen = this.session.is_active !== false;
+    const allStudents = this.data.students || [];
+    const presentList = allStudents.filter(st => st.is_present)
+      .sort((a, b) => String(b.check_in_time || '').localeCompare(String(a.check_in_time || '')));
+    const absentList = allStudents.filter(st => !st.is_present)
+      .sort((a, b) => a.name.localeCompare(b.name));
 
     return `
       <!-- Top Metrics Counters -->
@@ -778,7 +872,9 @@ class AttendanceComponent {
                 </button>
               </div>
 
-              <div class="flex items-center gap-2">
+              <div class="flex items-center gap-2 flex-wrap">
+                <input id="roster-search" type="search" placeholder="🔍 Search name or ID…" value="${this.rosterFilter || ''}"
+                  class="px-3 py-1.5 border border-slate-200 rounded-xl text-xs w-44 focus:ring-2 focus:ring-indigo-500">
                 <button id="btn-export-csv" class="px-3 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-xl text-xs font-medium transition inline-flex items-center gap-1">
                   <span>📥</span> Export CSV
                 </button>
@@ -790,10 +886,10 @@ class AttendanceComponent {
 
             <!-- Tab Content: Verified Present -->
             ${this.activeRosterTab === 'present' ? `
-              <div class="overflow-x-auto">
+              <div class="overflow-x-auto max-h-[560px] overflow-y-auto">
                 <table class="w-full text-left text-xs border-collapse">
                   <thead>
-                    <tr class="bg-slate-50 text-slate-500 font-semibold border-b border-slate-100">
+                    <tr class="bg-slate-50 text-slate-500 font-semibold border-b border-slate-100 sticky top-0 z-10">
                       <th class="py-3 px-6">Student</th>
                       <th class="py-3 px-6">Check-in Time</th>
                       <th class="py-3 px-6">Verified Distance</th>
@@ -802,11 +898,11 @@ class AttendanceComponent {
                     </tr>
                   </thead>
                   <tbody class="divide-y divide-slate-100">
-                    ${this.data.present_students.map(s => `
-                      <tr class="hover:bg-slate-50/70 transition">
+                    ${presentList.map(s => `
+                      <tr class="roster-row hover:bg-slate-50/70 transition" data-search="${(s.name + ' ' + s.student_id).toLowerCase()}">
                         <td class="py-3.5 px-6">
                           <div class="flex items-center gap-3">
-                            <img src="${s.avatar}" class="w-7 h-7 rounded-full bg-slate-100">
+                            <img src="${s.avatar}" loading="lazy" class="w-7 h-7 rounded-full bg-slate-100">
                             <div>
                               <div class="font-bold text-slate-800">${s.name}</div>
                               <div class="text-[10px] text-slate-400 font-mono">${s.student_id}</div>
@@ -840,10 +936,10 @@ class AttendanceComponent {
 
             <!-- Tab Content: Not Checked In Yet -->
             ${this.activeRosterTab === 'absent' ? `
-              <div class="overflow-x-auto">
+              <div class="overflow-x-auto max-h-[560px] overflow-y-auto">
                 <table class="w-full text-left text-xs border-collapse">
                   <thead>
-                    <tr class="bg-slate-50 text-slate-500 font-semibold border-b border-slate-100">
+                    <tr class="bg-slate-50 text-slate-500 font-semibold border-b border-slate-100 sticky top-0 z-10">
                       <th class="py-3 px-6">Student</th>
                       <th class="py-3 px-6">Student ID</th>
                       <th class="py-3 px-6">Status</th>
@@ -851,11 +947,11 @@ class AttendanceComponent {
                     </tr>
                   </thead>
                   <tbody class="divide-y divide-slate-100">
-                    ${this.data.absent_students.map(s => `
-                      <tr class="hover:bg-slate-50/70 transition">
+                    ${absentList.map(s => `
+                      <tr class="roster-row hover:bg-slate-50/70 transition" data-search="${(s.name + ' ' + s.student_id).toLowerCase()}">
                         <td class="py-3.5 px-6">
                           <div class="flex items-center gap-3">
-                            <img src="${s.avatar}" class="w-7 h-7 rounded-full bg-slate-100">
+                            <img src="${s.avatar}" loading="lazy" class="w-7 h-7 rounded-full bg-slate-100">
                             <span class="font-bold text-slate-800">${s.name}</span>
                           </div>
                         </td>
@@ -980,13 +1076,26 @@ class AttendanceComponent {
             <div class="flex-1 min-w-0">
               <label for="select-student" class="block text-[10px] uppercase tracking-wider text-slate-400 font-semibold">I am</label>
               <select id="select-student" class="w-full bg-slate-800 text-white text-sm font-bold rounded-lg px-2 py-1 border border-slate-700">
-                ${students.map(s => `<option value="${s.student_id}" ${s.student_id === this.state.currentStudentId ? 'selected' : ''}>${s.name} (${s.student_id})</option>`).join('')}
+                ${[...students].sort((a, b) => a.name.localeCompare(b.name)).map(s => `<option value="${s.student_id}" ${s.student_id === this.state.currentStudentId ? 'selected' : ''}>${s.name} (${s.student_id})</option>`).join('')}
               </select>
             </div>
             <span class="px-2.5 py-1 rounded-full text-xs font-bold ${isPresent ? 'bg-emerald-500' : 'bg-amber-500'} text-white whitespace-nowrap">
               ${isPresent ? '✓ Present' : 'Not checked in'}
             </span>
           </div>
+          <input id="student-picker-search" type="search" autocomplete="off" placeholder="🔍 Find your name or ID (${students.length} students)…"
+            class="w-full bg-slate-800 text-white placeholder-slate-400 text-xs rounded-lg px-3 py-2 border border-slate-700">
+          <details id="student-register" class="text-[11px] text-slate-300" ${this.registerOpen ? 'open' : ''}>
+            <summary class="cursor-pointer">Not on the list? Add yourself</summary>
+            <div class="flex flex-col sm:flex-row gap-2 pt-2">
+              <input id="register-id" type="text" inputmode="numeric" autocomplete="off" placeholder="Student ID"
+                class="sm:w-32 bg-slate-800 text-white text-xs rounded-lg px-3 py-2 border border-slate-700">
+              <input id="register-name" type="text" autocomplete="name" placeholder="Full name"
+                class="flex-1 bg-slate-800 text-white text-xs rounded-lg px-3 py-2 border border-slate-700">
+              <button id="btn-register-student" class="px-3 py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg font-bold text-xs">Add</button>
+            </div>
+            ${this.registerMessage ? `<div class="pt-1 ${this.registerMessage.ok ? 'text-emerald-300' : 'text-rose-300'}">${this.registerMessage.text}</div>` : ''}
+          </details>
           ${sessionOpen ? '' : `
             <div class="text-[11px] bg-amber-500/20 border border-amber-400/40 text-amber-200 rounded-lg px-3 py-2">
               ⏸️ The instructor hasn't started a session yet. Check-ins open when the instructor presses "Start Session".
@@ -1219,6 +1328,49 @@ class AttendanceComponent {
     const testTools = this.container.querySelector('#student-test-tools');
     if (testTools) {
       testTools.addEventListener('toggle', () => { this.testToolsOpen = testTools.open; });
+    }
+
+    // Roster search (instructor) – filters rows in place, no re-render
+    const rosterSearch = this.container.querySelector('#roster-search');
+    if (rosterSearch) {
+      rosterSearch.addEventListener('input', (e) => {
+        this.rosterFilter = e.target.value;
+        this.applyRosterFilter();
+      });
+    }
+    this.applyRosterFilter();
+
+    // Student name picker search – filters <option>s and auto-selects a single match
+    const pickerSearch = this.container.querySelector('#student-picker-search');
+    if (pickerSearch) {
+      pickerSearch.addEventListener('input', (e) => {
+        const q = e.target.value.trim().toLowerCase();
+        const select = this.container.querySelector('#select-student');
+        if (!select) return;
+        const matches = [];
+        Array.from(select.options).forEach(opt => {
+          const hit = !q || opt.textContent.toLowerCase().includes(q);
+          opt.hidden = !hit;
+          opt.disabled = !hit;
+          if (hit) matches.push(opt);
+        });
+        if (q && matches.length >= 1 && (matches.length === 1 || select.selectedOptions[0]?.hidden)) {
+          select.value = matches[0].value;
+          this.state.currentStudentId = matches[0].value; // silent: no re-render while typing
+          AppState.storageSet('cs302_student_id', matches[0].value);
+          this.verificationFeedback = null;
+        }
+      });
+    }
+
+    // Self-registration
+    const registerBox = this.container.querySelector('#student-register');
+    if (registerBox) {
+      registerBox.addEventListener('toggle', () => { this.registerOpen = registerBox.open; });
+    }
+    const btnRegister = this.container.querySelector('#btn-register-student');
+    if (btnRegister) {
+      btnRegister.addEventListener('click', () => this.handleRegisterStudent());
     }
 
     // Student profile selector

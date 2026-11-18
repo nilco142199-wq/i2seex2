@@ -23,6 +23,9 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     """Multi-threaded HTTP Server for handling concurrent student requests."""
     daemon_threads = True
     allow_reuse_address = True
+    # Default listen backlog is only 5: a burst of 100+ phones connecting in the same second
+    # would get refused/delayed. A large backlog absorbs the whole lecture hall at once.
+    request_queue_size = 512
 
     def handle_error(self, request, client_address):
         # Failed TLS handshakes (browser rejected the self-signed cert) are normal – don't spam tracebacks
@@ -128,7 +131,12 @@ class ClassroomRequestHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", f"{mime_type}; charset=utf-8")
             self.send_header("Content-Length", str(len(content)))
-            self.send_header("Cache-Control", "no-cache")
+            # Big libraries (jsQR 130 KB, qrcode.js) are cached by phones for a day,
+            # so 100+ students don't re-download them on every visit.
+            if "/vendor/" in clean_path:
+                self.send_header("Cache-Control", "public, max-age=86400")
+            else:
+                self.send_header("Cache-Control", "no-cache")
             self._send_cors_headers()
             self.end_headers()
             self.wfile.write(content)

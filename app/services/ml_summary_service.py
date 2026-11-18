@@ -50,11 +50,11 @@ class MLSummaryService:
                 ActionItem("Publish synthesis notes to student Slack / Teams", "Teaching Assistant", "Tomorrow 10:00", "completed")
             ],
             transcript_snippets=[
-                TranscriptSnippet("00:03:15", "Prof. Architect", f"Today we focus specifically on {topic_clean} and its impact on maintainability.", highlight=True),
-                TranscriptSnippet("00:15:22", "Elena Rostova", "Can we apply this pattern in both statically and dynamically typed languages?", highlight=False),
-                TranscriptSnippet("00:15:40", "Prof. Architect", "Yes! The behavioral contract remains identical regardless of compile-time typing.", highlight=True),
-                TranscriptSnippet("00:32:05", "Marcus Brody", "How does this affect unit test isolation with mock objects?", highlight=False),
-                TranscriptSnippet("00:32:30", "Prof. Architect", "It makes isolation straightforward because dependencies can be mocked via simple stubs.", highlight=True)
+                TranscriptSnippet("00:03:15", "Dr. Avi Ben-David", f"Today we focus specifically on {topic_clean} and its impact on maintainability.", highlight=True),
+                TranscriptSnippet("00:15:22", "Yonatan Levi", "Can we apply this pattern in both statically and dynamically typed languages?", highlight=False),
+                TranscriptSnippet("00:15:40", "Dr. Avi Ben-David", "Yes! The behavioral contract remains identical regardless of compile-time typing.", highlight=True),
+                TranscriptSnippet("00:32:05", "Omer Biton", "How does this affect unit test isolation with mock objects?", highlight=False),
+                TranscriptSnippet("00:32:30", "Dr. Avi Ben-David", "It makes isolation straightforward because dependencies can be mocked via simple stubs.", highlight=True)
             ],
             topics=[topic_clean, "Loose Coupling", "Design Patterns", "Clean Code", "OOP Architecture"],
             engagement_score=94.2

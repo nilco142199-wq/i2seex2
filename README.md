@@ -11,14 +11,15 @@
 4. [Testing Guide — Student Flow](#-testing-guide--student-flow)
 5. [Testing on a Real Phone (HTTPS)](#-testing-on-a-real-phone-https)
 6. [Troubleshooting Camera / GPS / QR](#-troubleshooting-camera--gps--qr)
-7. [Automated Tests](#-automated-tests)
-8. [System Overview & Architecture](#-system-overview--architecture)
-9. [How the QR Flow Works](#-how-the-qr-flow-works)
-10. [GPS Distance Calculation (Haversine)](#-gps-distance-calculation-haversine-formula)
-11. [Class Video Upload & AI Summarization](#-class-video-upload--ai-summarization)
-12. [Anti-Spoofing & Anti-Screenshot Security](#%EF%B8%8F-anti-spoofing--anti-screenshot-security)
-13. [Project Structure](#-project-structure)
-14. [REST API Reference](#-rest-api-reference)
+7. [Automated Tests & Load Test](#-automated-tests)
+8. [Scalability (100+ students)](#-scalability-100-students)
+9. [System Overview & Architecture](#-system-overview--architecture)
+10. [How the QR Flow Works](#-how-the-qr-flow-works)
+11. [GPS Distance Calculation (Haversine)](#-gps-distance-calculation-haversine-formula)
+12. [Class Video Upload & AI Summarization](#-class-video-upload--ai-summarization)
+13. [Anti-Spoofing & Anti-Screenshot Security](#%EF%B8%8F-anti-spoofing--anti-screenshot-security)
+14. [Project Structure](#-project-structure)
+15. [REST API Reference](#-rest-api-reference)
 
 ---
 
@@ -132,7 +133,7 @@ Stop the server with **Ctrl + C**. If you see *"Address already in use"*, anothe
    - a **QR code** that rotates every 20 s (countdown badge `🔄 Rotates in: Xs`),
    - a large **6-character code** (e.g. `K7Q2MX`) that students can type if their camera fails.
    - Use **Dynamic (20s)** / **Static** to change rotation mode.
-6. **Watch check-ins live:** the roster refreshes automatically every 5 seconds.
+6. **Watch check-ins live:** the roster refreshes automatically every 5 seconds. With 100+ students use the **🔍 Search name or ID** box above the list; the tables scroll with a fixed header.
    - **✓ Verified Present** — name, time, distance from class, method.
    - **⏳ Not Checked In** — includes a *Mark Present* manual override.
    - **🚨 Flagged Breaches** — attempts rejected for being outside 500 m.
@@ -147,7 +148,8 @@ Stop the server with **Ctrl + C**. If you see *"Address already in use"*, anothe
 
 1. Open Student Mode in **another tab/window** (<http://localhost:8000/?role=student>) or on a phone (see next section).
    Each tab remembers its own role, so the instructor tab and student tab don't interfere.
-2. **Pick your name** in the *"I am"* dropdown at the top of the card.
+2. **Pick your name** in the *"I am"* dropdown at the top of the card (120 demo students with Israeli names). Type part of your name or ID in **🔍 Find your name** to jump to it.
+   **Not on the list?** (e.g. real classmates trying it during the presentation) open **"Not on the list? Add yourself"**, enter your student ID and full name, tap **Add** — you're selected automatically.
 3. **Step 1 – Scan the QR code:**
    - Tap **📷 Start Camera & Scan QR** and allow camera access.
    - Point the camera at the instructor's QR code. When it's read you hear a beep, the camera closes and check-in starts automatically.
@@ -223,12 +225,48 @@ python3 -m unittest discover tests -v
 
 Expected ending:
 ```
-Ran 18 tests in 0.0XXs
+Ran 24 tests in 0.0XXs
 
 OK
 ```
 
-The tests cover the domain models, Haversine distance, QR rotation and the grace window, deep-link URLs and short codes, session start/end, the 500 m geofence, and the REST router.
+The tests cover the domain models, Haversine distance, QR rotation and the grace window, deep-link URLs and short codes, session start/end, the 500 m geofence, the 120-student Israeli roster, concurrent check-ins of the whole class, versioned polling, self-registration, and the REST router.
+
+---
+
+### Load test (100+ students at once)
+
+```bash
+python3 tests/load_test.py                  # 150 students check in at the same moment
+python3 tests/load_test.py --students 300
+```
+
+It starts its own server on a free port (your running server is not affected) and simulates every phone doing: load the list → (register if new) → verify QR + GPS → poll status, while the instructor polls the roster. Example result on a laptop:
+
+```
+Students: 150   Requests: 483   Wall time: 0.53s   Throughput: 909 req/s
+Present at the end: 150 / 150
+Full roster payload: 45.1 KB  |  'unchanged' poll payload: 41 bytes
+Failures: 0
+✅ PASS
+```
+
+---
+
+## 📈 Scalability (100+ students)
+
+| Concern | What the system does |
+|---|---|
+| **Everyone checks in at the same second** | Every attendance write runs under one lock (`DataStore.lock`, `@_synchronized` in `AttendanceService`), so concurrent check-ins can't corrupt the roster. Tested with 120 threads in the unit tests and 300 HTTP clients in the load test. |
+| **Connection bursts** | The server's listen backlog is raised from Python's default 5 to 512 (`request_queue_size`), and each request runs in its own thread. |
+| **Polling traffic** | Student phones poll only their **own** status (`/api/attendance/me`, ~0.5 KB) every 10 s, and only for the open tab — not the whole class. The instructor polls every 5 s with `?since=<version>`; if nothing changed the server answers `{"unchanged": true}` (41 bytes) and the screen isn't redrawn. |
+| **Payload size** | The roster is sent once (no duplicated present/absent copies). Large JS libraries are cached by phones for a day. |
+| **Double taps / retries** | Check-in is idempotent: a second check-in returns *"already checked in"* without changing the original time. |
+| **Real students not in the demo list** | `POST /api/students/register` lets a student add themselves (validated ID + name; an existing ID is reused, never duplicated). |
+| **Big rosters in the UI** | Instructor search + scrollable tables; student name search; avatars lazy-loaded. |
+| **Bounded memory** | The audit log keeps the latest 1,000 attempts. |
+
+Limits to know: data is kept **in memory** (restarting the server resets it), and it runs as a single process. That's fine for a lecture hall of a few hundred students; a production deployment would move the repository to a database (the Repository pattern makes that a one-class change).
 
 ---
 
@@ -360,7 +398,8 @@ The system features an automated **Class Video Upload & Multi-Modal AI Summariza
 ├── server.py                      # Multi-threaded zero-dependency HTTP(S) server (--https, --host, --tunnel)
 ├── certs/                         # Auto-generated self-signed HTTPS certificate (git-ignored)
 ├── tests/
-│   └── test_app.py                # 18 unit tests (models, QR codes, Ariel 500 m geofence, API)
+│   ├── test_app.py                # 24 unit tests (models, QR, 500 m geofence, concurrency, API)
+│   └── load_test.py               # 150-300 simultaneous students over HTTP
 ├── app/
 │   ├── models/                    # Encapsulated Domain Entities
 │   │   ├── session.py             # ClassSession, CheckInAttempt, & Haversine formula
@@ -371,7 +410,8 @@ The system features an automated **Class Video Upload & Multi-Modal AI Summariza
 │   │   ├── meeting_summary.py     # Lecture synthesis, action items, & transcripts
 │   │   └── homework_review.py     # LLM code reviews, SOLID compliance, & design patterns
 │   ├── repositories/
-│   │   └── datastore.py           # Thread-safe In-Memory Repository with seed data
+│   │   ├── datastore.py           # Thread-safe In-Memory Repository (lock + roster version)
+│   │   └── seed_students.py       # 120 demo students with Israeli names
 │   ├── services/                  # Business Logic Layer (Single Responsibility)
 │   │   ├── attendance_service.py  # Dual-factor QR/GPS verification & audit logging
 │   │   ├── video_summary_service.py# Video ingestion, Whisper ASR, & LLM chapter synthesis
@@ -416,7 +456,9 @@ The system features an automated **Class Video Upload & Multi-Modal AI Summariza
 | `POST` | `/api/session/location` | Sets classroom GPS coordinates (`lat`, `lng`, `name`) |
 | `POST` | `/api/session/create` | Configures class session, radius (500m), and QR mode |
 | `POST` | `/api/attendance/verify` | **Dual-Factor verification** (`student_id`, `qr_token`, `lat`, `lng`). `qr_token` may be the raw token, the QR deep-link URL or the 6-char short code. Failure `reason`: `invalid_qr`, `distance_exceeded`, `session_closed`, `student_not_found`, `missing_gps` |
-| `GET` | `/api/attendance` | Returns student roster, present/absent counts, and breach logs |
+| `GET` | `/api/attendance` | Roster (`students`), counts, breach log and `version`. With `?since=<version>` returns `{"unchanged": true}` when nothing changed |
+| `GET` | `/api/attendance/me?student_id=…` | Lightweight status of one student + session state (used by student phones) |
+| `POST` | `/api/students/register` | Student adds themselves (`student_id`, `name`) |
 | `GET` | `/api/attendance/stats` | Detailed statistics and audit trail of remote attempts |
 | `POST` | `/api/video/upload` | **Uploads lecture recording & triggers multi-modal LLM synthesis** |
 | `GET` | `/api/video/list` | Returns library of uploaded lecture videos and summaries |

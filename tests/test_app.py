@@ -279,5 +279,87 @@ class TestQrScanFixes(unittest.TestCase):
         self.assertEqual(body["reason"], "missing_gps")
 
 
+class TestScalability(unittest.TestCase):
+    """120-student roster, concurrent check-ins, cheap polling, self-registration."""
+
+    def test_roster_has_120_israeli_students(self):
+        students = DataStore().get_all_students()
+        self.assertGreaterEqual(len(students), 120)
+        names = {s.student_id: s.name for s in students}
+        self.assertEqual(names["s101"], "Noa Cohen")
+        self.assertEqual(names["s103"], "Itai Mizrahi")
+        self.assertEqual(len(set(names.values())), len(names))  # no duplicate names
+
+    def test_concurrent_checkins_of_whole_class(self):
+        import threading
+        service = AttendanceService()
+        service.start_session()
+        token = service.get_current_qr()["token"]
+        ids = [s.student_id for s in DataStore().get_all_students()]
+        results, errors = [], []
+        barrier = threading.Barrier(len(ids))
+
+        def worker(sid):
+            try:
+                barrier.wait()  # everyone checks in at the same instant
+                results.append(service.verify_qr_gps_checkin(sid, token, 32.104900, 35.209444))
+            except Exception as e:  # pragma: no cover
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(sid,)) for sid in ids]
+        for t in threads: t.start()
+        for t in threads: t.join()
+
+        self.assertEqual(errors, [])
+        self.assertTrue(all(r["success"] for r in results))
+        summary = service.get_roster_summary()
+        self.assertEqual(summary["present_count"], len(ids))
+        self.assertEqual(summary["total_enrolled"], len(ids))
+
+    def test_double_checkin_is_idempotent(self):
+        service = AttendanceService()
+        service.start_session()
+        token = service.get_current_qr()["token"]
+        first = service.verify_qr_gps_checkin("s103", token, 32.104900, 35.209444)
+        second = service.verify_qr_gps_checkin("s103", token, 32.104900, 35.209444)
+        self.assertTrue(first["success"])
+        self.assertTrue(second["success"])
+        self.assertTrue(second.get("already_present"))
+        self.assertEqual(first["student"]["check_in_time"], second["student"]["check_in_time"])
+
+    def test_versioned_polling_returns_tiny_payload_when_unchanged(self):
+        router = ApiRouter()
+        _, full = router.handle("GET", "/api/attendance", b"")
+        self.assertIn("students", full)
+        self.assertNotIn("present_students", full)  # no duplicated lists anymore
+        _, again = router.handle("GET", f"/api/attendance?since={full['version']}", b"")
+        self.assertEqual(again, {"unchanged": True, "version": full["version"]})
+        router.handle("POST", "/api/session/start", b"{}")
+        _, after = router.handle("GET", f"/api/attendance?since={full['version']}", b"")
+        self.assertIn("students", after)
+        self.assertGreater(after["version"], full["version"])
+
+    def test_student_status_endpoint(self):
+        router = ApiRouter()
+        code, body = router.handle("GET", "/api/attendance/me?student_id=s101", b"")
+        self.assertEqual(code, 200)
+        self.assertEqual(body["student"]["name"], "Noa Cohen")
+        self.assertEqual(body["session"]["allowed_radius_meters"], 500.0)
+
+    def test_self_registration(self):
+        router = ApiRouter()
+        code, body = router.handle("POST", "/api/students/register",
+                                   json.dumps({"student_id": "318234567", "name": "  Moshe   Levi "}).encode())
+        self.assertEqual(code, 200)
+        self.assertTrue(body["created"])
+        self.assertEqual(body["student"]["name"], "Moshe Levi")
+        code, body = router.handle("POST", "/api/students/register",
+                                   json.dumps({"student_id": "318234567", "name": "Other"}).encode())
+        self.assertFalse(body["created"])  # existing ID is reused, not duplicated
+        code, body = router.handle("POST", "/api/students/register",
+                                   json.dumps({"student_id": "x", "name": "A"}).encode())
+        self.assertEqual(code, 400)
+
+
 if __name__ == "__main__":
     unittest.main()

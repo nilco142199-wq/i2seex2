@@ -18,7 +18,7 @@ class ApiClient {
       const response = await fetch(`${this.BASE_URL}${endpoint}`, config);
       const data = await response.json();
       if (!response.ok) {
-        throw new Error(data.error || `HTTP error ${response.status}`);
+        throw new Error(data.error || data.message || `HTTP error ${response.status}`);
       }
       return data;
     } catch (err) {
@@ -33,8 +33,22 @@ class ApiClient {
   }
 
   // Attendance & Geofenced QR
-  static async getAttendance() {
-    return this.request('/api/attendance');
+  /** @param {number} [sinceVersion] roster version the caller already has (server may reply {unchanged:true}) */
+  static async getAttendance(sinceVersion) {
+    const q = (sinceVersion !== undefined && sinceVersion !== null) ? `?since=${encodeURIComponent(sinceVersion)}` : '';
+    return this.request('/api/attendance' + q);
+  }
+
+  /** Lightweight status for one student (used by student phones instead of the full roster). */
+  static async getMyAttendance(studentId) {
+    return this.request('/api/attendance/me?student_id=' + encodeURIComponent(studentId || ''));
+  }
+
+  static async registerStudent(studentId, name) {
+    return this.request('/api/students/register', {
+      method: 'POST',
+      body: JSON.stringify({ student_id: studentId, name })
+    });
   }
 
   static async getSessionActive() {

@@ -186,25 +186,37 @@ class App {
     `;
   }
 
+  /**
+   * Background sync, designed for a lecture hall of 100+ phones:
+   * - Instructor: every 5 s; roster requests carry a version, so "nothing changed" costs a few bytes.
+   * - Student: every 10 s, and only the data for the tab that is open
+   *   (attendance → own status only, not the whole class list).
+   */
   startLiveSync() {
-    // Light background sync every 8 seconds
-    this.pollInterval = setInterval(async () => {
-      try {
-        await Promise.all([
-          this.attendanceComp.fetchData(),
-          this.commentsComp.fetchComments(),
-          this.pollComp.fetchPoll()
-        ]);
-        if (this.state.activeTab === 'dashboard') {
-          this.renderDashboardSummary();
+    if (this.pollTimer) clearTimeout(this.pollTimer);
+    const tick = async () => {
+      const isLecturer = this.state.currentRole === 'lecturer';
+      const tab = this.state.activeTab;
+      if (!document.hidden) {
+        try {
+          const jobs = [];
+          let attendanceChanged = false;
+          if (isLecturer || tab === 'attendance') {
+            jobs.push(this.attendanceComp.fetchData().then(c => { attendanceChanged = c; }));
+          }
+          if (isLecturer || tab === 'comments') jobs.push(this.commentsComp.fetchComments());
+          if (isLecturer || tab === 'polls') jobs.push(this.pollComp.fetchPoll());
+          await Promise.all(jobs);
+
+          if (tab === 'dashboard' && isLecturer) this.renderDashboardSummary();
+          if (tab === 'attendance') this.attendanceComp.onBackgroundRefresh(attendanceChanged);
+        } catch (err) {
+          console.warn('Background sync:', err);
         }
-        if (this.state.activeTab === 'attendance') {
-          this.attendanceComp.onBackgroundRefresh();
-        }
-      } catch (err) {
-        console.warn('Background sync:', err);
       }
-    }, 5000);
+      this.pollTimer = setTimeout(tick, isLecturer ? 5000 : 10000);
+    };
+    this.pollTimer = setTimeout(tick, 5000);
   }
 }
 

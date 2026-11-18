@@ -52,14 +52,14 @@ class VideoSummaryService:
             action_items=[
                 ActionItem("Submit Assignment 2 with modular SOLID design", "All Students", "Friday 23:59", "pending"),
                 ActionItem("Review Chapter 6 on Behavioral GoF Patterns", "All Students", "Next Monday", "pending"),
-                ActionItem("Publish annotated refactoring branch to GitHub", "Prof. Architect", "Today 16:00", "completed")
+                ActionItem("Publish annotated refactoring branch to GitHub", "Dr. Avi Ben-David", "Today 16:00", "completed")
             ],
             transcript_snippets=[
-                TranscriptSnippet("14:25", "Prof. Architect", "Notice how the Subject never depends on concrete observer implementations.", highlight=True),
-                TranscriptSnippet("32:10", "Alex Rivera", "Does the push model pass the whole payload or just the event ID?", highlight=False),
-                TranscriptSnippet("32:30", "Prof. Architect", "Passing a granular event object gives the observer flexibility without tight coupling.", highlight=True),
-                TranscriptSnippet("54:15", "Maya Patel", "How do we prevent memory leaks if an observer isn't unregistered?", highlight=False),
-                TranscriptSnippet("54:40", "Prof. Architect", "By utilizing weak references or an explicit disposable lifecycle pattern.", highlight=True)
+                TranscriptSnippet("14:25", "Dr. Avi Ben-David", "Notice how the Subject never depends on concrete observer implementations.", highlight=True),
+                TranscriptSnippet("32:10", "Noa Cohen", "Does the push model pass the whole payload or just the event ID?", highlight=False),
+                TranscriptSnippet("32:30", "Dr. Avi Ben-David", "Passing a granular event object gives the observer flexibility without tight coupling.", highlight=True),
+                TranscriptSnippet("54:15", "Tamar Peretz", "How do we prevent memory leaks if an observer isn't unregistered?", highlight=False),
+                TranscriptSnippet("54:40", "Dr. Avi Ben-David", "By utilizing weak references or an explicit disposable lifecycle pattern.", highlight=True)
             ],
             topics=["Observer Pattern", "Strategy Pattern", "SOLID Principles", "Refactoring", "Loose Coupling"],
             ai_model="Whisper-Large-v3 + Gemini 1.5 Pro Video LLM",
@@ -95,7 +95,7 @@ class VideoSummaryService:
                 ActionItem("Run linter and SOLID rubric check on project repos", "All Students", "Thursday", "pending")
             ],
             transcript_snippets=[
-                TranscriptSnippet("19:05", "Prof. Architect", "If a class handles both persistence and HTTP formatting, it violates SRP.", highlight=True)
+                TranscriptSnippet("19:05", "Dr. Avi Ben-David", "If a class handles both persistence and HTTP formatting, it violates SRP.", highlight=True)
             ],
             topics=["Clean Architecture", "SOLID Rubric", "Refactoring", "Code Smells"],
             ai_model="Whisper-Large-v3 + Gemini 1.5 Pro Video LLM",
@@ -161,10 +161,10 @@ class VideoSummaryService:
                 ActionItem("Review uploaded slides and lecture summary notes", "All Students", "This Weekend", "pending")
             ],
             transcript_snippets=[
-                TranscriptSnippet("00:02:10", "Prof. Architect", f"Welcome everyone. Today's recorded session investigates {topic_clean}.", highlight=True),
+                TranscriptSnippet("00:02:10", "Dr. Avi Ben-David", f"Welcome everyone. Today's recorded session investigates {topic_clean}.", highlight=True),
                 TranscriptSnippet("13:15", "Student", "How does this compare to procedural alternatives?", highlight=False),
-                TranscriptSnippet("13:40", "Prof. Architect", "It encapsulates behavior so changes are localized without ripple effects.", highlight=True),
-                TranscriptSnippet("30:10", "Prof. Architect", "Notice on this slide how the abstraction insulates the client code.", highlight=True)
+                TranscriptSnippet("13:40", "Dr. Avi Ben-David", "It encapsulates behavior so changes are localized without ripple effects.", highlight=True),
+                TranscriptSnippet("30:10", "Dr. Avi Ben-David", "Notice on this slide how the abstraction insulates the client code.", highlight=True)
             ],
             topics=[topic_clean, "Design Patterns", "Clean Architecture", "OOP Principles"],
             ai_model="Whisper-Large-v3 + Gemini 1.5 Pro Video LLM",

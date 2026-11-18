@@ -60,7 +60,16 @@ class ApiRouter:
             }
 
         elif path == "/api/attendance":
-            return 200, self._attendance_service.get_roster_summary()
+            since = query.get("since", [None])[0]
+            try:
+                since = int(since) if since not in (None, "") else None
+            except ValueError:
+                since = None
+            return 200, self._attendance_service.get_roster_summary(since_version=since)
+
+        elif path == "/api/attendance/me":
+            student_id = query.get("student_id", [""])[0]
+            return 200, self._attendance_service.get_student_status(student_id)
 
         elif path == "/api/attendance/stats":
             return 200, self._attendance_service.get_roster_summary()
@@ -146,6 +155,10 @@ class ApiRouter:
                 qr_rotation_interval_seconds=data.get("qr_rotation_interval_seconds", 20)
             )
             return 200, {"success": True, "session": res}
+
+        elif path == "/api/students/register":
+            res = self._attendance_service.register_student(data.get("student_id"), data.get("name"))
+            return (200, res) if res.get("success") else (400, res)
 
         elif path == "/api/session/start":
             res = self._attendance_service.start_session(reset_roster=bool(data.get("reset_roster", True)))

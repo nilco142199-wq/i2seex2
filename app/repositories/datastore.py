@@ -5,6 +5,7 @@ Provides thread-safe access to application entities following the Repository Pat
 import threading
 from typing import List, Optional, Dict
 from app.models.student import Student
+from app.repositories.seed_students import generate_roster, DEFAULT_CLASS_SIZE
 from app.models.feedback import Comment
 from app.models.poll import Poll
 from app.models.meeting_summary import MeetingSummary, ActionItem, TranscriptSnippet
@@ -37,14 +38,23 @@ class DataStore:
         self._meeting_summary: Optional[MeetingSummary] = None
         self._submissions: Dict[str, SubmissionReview] = {}
         self._session: Optional[ClassSession] = None
+        # Concurrency: one re-entrant lock serialises every attendance write, so 100+ students
+        # checking in at the same second can never corrupt the roster.
+        self.lock = threading.RLock()
+        # Increases on every roster change; lets the instructor's poll skip unchanged data.
+        self.roster_version = 0
         self._seed_data()
+
+    def bump_version(self) -> int:
+        self.roster_version += 1
+        return self.roster_version
 
     def _seed_data(self):
         # 0. Seed Active Class Session with GPS coordinates and Dynamic QR
         self._session = ClassSession(
             session_id="cs302_lec08",
             course_name="CS302 - Advanced OOP",
-            instructor_name="Prof. Architect",
+            instructor_name="Dr. Avi Ben-David",
             classroom_name=ARIEL_UNIVERSITY_NAME,
             classroom_lat=ARIEL_UNIVERSITY_LAT,
             classroom_lng=ARIEL_UNIVERSITY_LNG,
@@ -56,7 +66,7 @@ class DataStore:
         # Pre-seed a flagged spoofing attempt to demonstrate anti-spoofing dashboard
         self._session.log_attempt(CheckInAttempt(
             student_id="s105",
-            student_name="Marcus Brody",
+            student_name="Omer Biton",
             student_lat=32.113922,
             student_lng=35.219744,
             distance_meters=1380.5,
@@ -65,29 +75,11 @@ class DataStore:
             timestamp="09:05:12"
         ))
 
-        # 1. Seed Students
-        seed_students = [
-            ("s101", "Alex Rivera", "alex.r@cs.univ.edu", True, "09:02:15", "qr_gps", 28.4),
-            ("s102", "Elena Rostova", "elena.r@cs.univ.edu", True, "09:04:30", "qr_gps", 45.1),
-            ("s103", "David Kim", "david.k@cs.univ.edu", False, None, "none", None),
-            ("s104", "Maya Patel", "maya.p@cs.univ.edu", True, "09:01:10", "qr_gps", 15.2),
-            ("s105", "Marcus Brody", "marcus.b@cs.univ.edu", False, None, "none", None),
-            ("s106", "Sofia Rodriguez", "sofia.r@cs.univ.edu", True, "09:05:42", "face_scan", 32.0),
-            ("s107", "Liam O'Connor", "liam.o@cs.univ.edu", True, "09:03:18", "qr_gps", 51.7),
-            ("s108", "Zackariah Chen", "zack.c@cs.univ.edu", False, None, "none", None),
-            ("s109", "Chloe Martin", "chloe.m@cs.univ.edu", True, "09:00:55", "face_scan", 21.0),
-            ("s110", "Tariq Mansoor", "tariq.m@cs.univ.edu", True, "09:06:21", "qr_gps", 39.5),
-        ]
-        for sid, name, email, present, c_time, method, dist in seed_students:
-            self._students[sid] = Student(
-                student_id=sid,
-                name=name,
-                email=email,
-                avatar=f"https://api.dicebear.com/7.x/notionists/svg?seed={name.replace(' ', '')}",
-                is_present=present,
-                check_in_time=c_time,
-                check_in_method=method,
-                distance_meters=dist
+        # 1. Seed Students (120 Israeli names – see seed_students.py)
+        for record in generate_roster(DEFAULT_CLASS_SIZE):
+            self._students[record["student_id"]] = Student(
+                avatar=f"https://api.dicebear.com/7.x/notionists/svg?seed={record['name'].replace(' ', '')}",
+                **record
             )
 
         # 2. Seed Feedback Comments
@@ -95,7 +87,7 @@ class DataStore:
             Comment(
                 comment_id="c1",
                 content="Could you explain the difference between Strategy and State pattern with a quick code snippet?",
-                author_name="Maya Patel",
+                author_name="Tamar Peretz",
                 is_anonymous=False,
                 category="question",
                 timestamp="09:15:20",
@@ -115,7 +107,7 @@ class DataStore:
             Comment(
                 comment_id="c3",
                 content="For Exercise 2, can we use Python dataclasses or should we strictly write explicit getters and setters?",
-                author_name="Alex Rivera",
+                author_name="Noa Cohen",
                 is_anonymous=False,
                 category="question",
                 timestamp="09:24:11",
@@ -125,7 +117,7 @@ class DataStore:
             Comment(
                 comment_id="c4",
                 content="Offline suggestion: Please upload the UML diagram template for the midterm project.",
-                author_name="David Kim",
+                author_name="Itai Mizrahi",
                 is_anonymous=False,
                 category="offline",
                 timestamp="09:30:05",
@@ -182,15 +174,15 @@ class DataStore:
             action_items=[
                 ActionItem("Submit Assignment 2 (Classroom Dashboard prototype)", "All Students", "Friday 23:59", "pending"),
                 ActionItem("Review Chapter 6 on Behavioral Design Patterns", "All Students", "Next Monday", "pending"),
-                ActionItem("Upload recorded lecture & annotated slides to portal", "Prof. Architect", "Today 16:00", "completed"),
+                ActionItem("Upload recorded lecture & annotated slides to portal", "Dr. Avi Ben-David", "Today 16:00", "completed"),
                 ActionItem("Host QA Office Hours on Discord / Zoom", "Teaching Assistant", "Wednesday 14:00", "pending")
             ],
             transcript_snippets=[
-                TranscriptSnippet("09:12:40", "Prof. Architect", "Notice how when the Subject updates its state, it notifies observers via a defined interface.", highlight=True),
-                TranscriptSnippet("09:14:15", "Maya Patel", "Does that mean the Subject has zero knowledge of the concrete observer implementation?", highlight=False),
-                TranscriptSnippet("09:14:28", "Prof. Architect", "Precisely! That's the core essence of loose coupling in Object-Oriented Design.", highlight=True),
-                TranscriptSnippet("09:28:10", "Alex Rivera", "How does this prevent violation of the Open/Closed Principle?", highlight=False),
-                TranscriptSnippet("09:28:35", "Prof. Architect", "Because you can add new observer classes without altering a single line of the subject.", highlight=True)
+                TranscriptSnippet("09:12:40", "Dr. Avi Ben-David", "Notice how when the Subject updates its state, it notifies observers via a defined interface.", highlight=True),
+                TranscriptSnippet("09:14:15", "Tamar Peretz", "Does that mean the Subject has zero knowledge of the concrete observer implementation?", highlight=False),
+                TranscriptSnippet("09:14:28", "Dr. Avi Ben-David", "Precisely! That's the core essence of loose coupling in Object-Oriented Design.", highlight=True),
+                TranscriptSnippet("09:28:10", "Noa Cohen", "How does this prevent violation of the Open/Closed Principle?", highlight=False),
+                TranscriptSnippet("09:28:35", "Dr. Avi Ben-David", "Because you can add new observer classes without altering a single line of the subject.", highlight=True)
             ],
             topics=["Observer Pattern", "Strategy Pattern", "SOLID Principles", "Loose Coupling", "Refactoring", "Clean Architecture"],
             engagement_score=92.4
@@ -200,7 +192,7 @@ class DataStore:
         rev_alex = SubmissionReview(
             submission_id="sub-101",
             student_id="s101",
-            student_name="Alex Rivera",
+            student_name="Noa Cohen",
             repo_name="alex-rivera/oop-classroom-tool",
             branch="main",
             commit_hash="7f3c91a",
@@ -234,7 +226,7 @@ class DataStore:
         rev_elena = SubmissionReview(
             submission_id="sub-102",
             student_id="s102",
-            student_name="Elena Rostova",
+            student_name="Yonatan Levi",
             repo_name="elena-r/interactive-teaching-platform",
             branch="feature/vibe-prototype",
             commit_hash="4a8d11c",
@@ -268,7 +260,7 @@ class DataStore:
         rev_david = SubmissionReview(
             submission_id="sub-103",
             student_id="s103",
-            student_name="David Kim",
+            student_name="Itai Mizrahi",
             repo_name="david-kim/cs-teach-dashboard",
             branch="master",
             commit_hash="2b9e602",
@@ -307,6 +299,10 @@ class DataStore:
     # Data Access Methods
     def get_all_students(self) -> List[Student]:
         return list(self._students.values())
+
+    def add_student(self, student: Student) -> Student:
+        self._students[student.student_id] = student
+        return student
 
     def get_student(self, student_id: str) -> Optional[Student]:
         return self._students.get(student_id)

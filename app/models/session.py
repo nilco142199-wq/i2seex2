@@ -130,6 +130,8 @@ class ClassSession:
         sig = hmac.new(self.SECRET_KEY, msg, hashlib.sha256).hexdigest()[:16]
         return f"QR_{self.session_id}_{slot}_{sig}"
 
+    MAX_ATTEMPTS_LOG = 1000
+
     SHORT_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O/1/I confusion
 
     def generate_short_code_for_slot(self, slot: int) -> str:
@@ -230,9 +232,9 @@ class ClassSession:
 
     def log_attempt(self, attempt: CheckInAttempt) -> None:
         self.attempts_log.insert(0, attempt)
-        # Keep recent 50 attempts
-        if len(self.attempts_log) > 50:
-            self.attempts_log = self.attempts_log[:50]
+        # Bounded audit log: enough for a large lecture hall, constant memory
+        if len(self.attempts_log) > self.MAX_ATTEMPTS_LOG:
+            del self.attempts_log[self.MAX_ATTEMPTS_LOG:]
 
     def to_dict(self) -> Dict[str, Any]:
         qr_info = self.get_current_qr_info()
