@@ -35,7 +35,7 @@ Online tools used in class today (Moodle quizzes, Zoom chat, paper attendance sh
 | W6 | Comments & suggestions (anonymous option, upvote, resolve) | Implemented |
 | W7 | On-the-spot polls (create, vote once, live results, open/close) | Implemented |
 | W8 | Class-video ML summary (chapters, takeaways, action items, Q&A) | UI + pipeline + **real LLM (Google Gemini)**; demo mode without an API key |
-| W9 | Homework deep review + comparison between submissions | UI + pipeline, **simulated** model output |
+| W9 | Homework deep review + comparison between submissions | UI + pipeline + **real LLM (Gemini)** with evidence check; measured code similarity |
 | W10 | Scalability for 100–300 students, public HTTPS link for phones | Implemented + load-tested |
 | W11 | Design documents (this folder), tests, demo | Delivered |
 

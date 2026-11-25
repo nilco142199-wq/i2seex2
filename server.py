@@ -81,22 +81,27 @@ class UploadLimiter:
         return stamps
 
     @classmethod
-    def check(cls, handler):
-        """Returns None if the upload may start (and records it), otherwise a readable reason."""
+    def check(cls, handler, kind="video"):
+        """Returns None if the upload may start (and records it), otherwise a readable reason.
+        kind = "video" (lecture recordings) or "homework" (homework reviews) – counted separately."""
         import time
         if handler._is_local_request():
             return None
         try:
-            busy = sum(1 for v in handler.router._video_service.get_all_videos() if v.get("status") == "processing")
+            items = (handler.router._video_service.get_all_videos() if kind == "video"
+                     else handler.router._review_service.get_all_reviews())
+            busy = sum(1 for v in items if v.get("status") == "processing")
         except Exception:
             busy = 0
         if busy >= cls.MAX_PROCESSING:
-            return f"{busy} recordings are being summarised right now. Please try again in a few minutes."
+            what = "recordings are being summarised" if kind == "video" else "homework submissions are being reviewed"
+            return f"{busy} {what} right now. Please try again in a few minutes."
         now = time.time()
         with cls._lock:
-            dev_key, ip_key = "dev:" + handler._device_cookie(), "ip:" + handler._client_ip()
+            dev_key, ip_key = f"{kind}:dev:" + handler._device_cookie(), f"{kind}:ip:" + handler._client_ip()
             if len(cls._recent(dev_key, now)) >= cls.PER_DEVICE:
-                return f"Upload limit reached: {cls.PER_DEVICE} recordings per hour from each phone. Try again later."
+                what = "recordings" if kind == "video" else "homework uploads"
+                return f"Upload limit reached: {cls.PER_DEVICE} {what} per hour from each phone. Try again later."
             if len(cls._recent(ip_key, now)) >= cls.PER_IP:
                 return "Too many uploads from this network in the last hour. Try again later."
             cls._log[dev_key].append(now)
@@ -257,9 +262,53 @@ class ClassroomRequestHandler(BaseHTTPRequestHandler):
             language=self.headers.get("X-Summary-Language", "auto"), mime_type=mime)
         return self._json_reply(200, {"success": True, "video": video})
 
+    MAX_HOMEWORK_ZIP = 30 * 1024 * 1024
+
+    def _receive_homework_zip(self):
+        """POST /api/review/upload-zip – raw .zip bytes in the body; X-Student-Name / X-Filename headers."""
+        from urllib.parse import unquote
+        refusal = UploadLimiter.check(self, "homework")
+        if refusal:
+            return self._json_reply(429, {"success": False, "error": refusal})
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length <= 0:
+            return self._json_reply(400, {"success": False, "error": "No file received."})
+        if length > self.MAX_HOMEWORK_ZIP:
+            return self._json_reply(413, {"success": False, "error": "The zip is larger than 30 MB. Remove videos, "
+                                                                     "datasets and build folders and try again."})
+        data = b""
+        try:
+            while len(data) < length:
+                chunk = self.rfile.read(min(1024 * 1024, length - len(data)))
+                if not chunk:
+                    break
+                data += chunk
+        except (ConnectionError, TimeoutError, OSError):
+            pass
+        if len(data) != length:
+            return self._json_reply(400, {"success": False, "error": "The upload was interrupted – try again."})
+        res = self.router._review_service.submit_zip(
+            data, unquote(self.headers.get("X-Filename", "homework.zip"))[:200],
+            unquote(self.headers.get("X-Student-Name", "")),
+            language=self.headers.get("X-Review-Language", "en"))
+        return self._json_reply(201 if res.get("success") else 400, res)
+
     def _handle_api(self, method: str):
-        if method == "POST" and self.path.split("?")[0].rstrip("/") == "/api/video/upload-file":
+        route = self.path.split("?")[0].rstrip("/")
+        if method == "POST" and route == "/api/video/upload-file":
             return self._receive_video_upload()
+        if method == "POST" and route == "/api/review/upload-zip":
+            return self._receive_homework_zip()
+        if method == "POST" and route == "/api/review/analyze":
+            refusal = UploadLimiter.check(self, "homework")      # GitHub link: same limits as a zip
+            if refusal:
+                return self._json_reply(429, {"success": False, "error": refusal})
+        if method == "POST" and route == "/api/review/requirements" and not self._is_local_request():
+            return self._json_reply(403, {"success": False, "error": "Only the instructor's computer "
+                                                                     "(http://localhost:8000) can change the requirements."})
         if self.path.split("?")[0].rstrip("/") == "/api/attendance/export.csv":
             # Live spreadsheet: =IMPORTDATA("<public link>/api/attendance/export.csv") in Google Sheets
             payload = self.router._attendance_service.export_csv().encode("utf-8-sig")  # BOM: Excel shows Hebrew correctly

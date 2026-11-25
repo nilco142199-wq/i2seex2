@@ -176,10 +176,15 @@ class App {
             <span>🔍</span>
           </div>
           <div class="mt-2 text-2xl font-bold text-slate-800">
-            ${reviews ? reviews.length : 0} Repos
+            ${reviews ? reviews.length : 0} ${reviews && reviews.length === 1 ? 'submission' : 'submissions'}
           </div>
           <div class="mt-1 text-xs text-emerald-600 font-medium">
-            Avg Score: 84/100
+            ${(() => {
+              const scored = (reviews || []).filter(r => typeof r.overall_score === 'number');
+              if (!scored.length) return 'Upload a homework zip or GitHub link';
+              const avg = Math.round(scored.reduce((t, r) => t + r.overall_score, 0) / scored.length);
+              return `Average AI score: ${avg}/100 (${scored.length} reviewed)`;
+            })()}
           </div>
         </div>
       </div>

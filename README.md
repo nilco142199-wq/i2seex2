@@ -19,7 +19,7 @@ One web application (no installation for students – KISS) that a lecturer star
 | 2 | Comments & suggestions, real time / offline | Live feed, categories, anonymous, upvote, resolve |
 | 3 | On-the-spot (KISS) polls | Create in seconds, one vote per student, live results |
 | 4 | ML summary of a class video (Zoom / Meet / Classroom) | **Real LLM (Google Gemini)** watches the recording → summary, clickable chapters, takeaways, action items, Q&A (demo mode without an API key) |
-| 5 | Deep LLM homework review incl. comparison to other students | Scores, SOLID, patterns, code smells, side-by-side *(model output simulated)* |
+| 5 | Deep LLM homework review incl. comparison to other students | **Real LLM (Google Gemini)** reads the uploaded .zip / GitHub repo → requirements met/missing, SOLID, patterns, problems to fix – every finding cites a real file; **measured code similarity** between students + side-by-side comparison |
 
 ### Out of scope
 Integration with Moodle / Zoom / Google Classroom · personal information (no ID numbers; the roster is the lecturer's class list – names only, in Hebrew; class photos are analysed in the browser and never uploaded) · user accounts / SSO · persistent database · paid LLM subscriptions (interfaces are ready).
@@ -289,7 +289,7 @@ python3 -m unittest discover tests -v
 
 Expected ending:
 ```
-Ran 33 tests in 0.0XXs
+Ran 39 tests in 0.0XXs
 
 OK
 ```
@@ -482,6 +482,33 @@ Browser ──(file, streamed)──► server.py  POST /api/video/upload-file  
 
 ---
 
+## 🔍 Homework Deep Review (real, with comparison between students)
+
+Students (from their phone, in Student Mode) or the lecturer upload homework as a **.zip** or a **public GitHub link**. Code: [`code_analysis.py`](app/services/code_analysis.py), [`code_review_service.py`](app/services/code_review_service.py), [`review.js`](static/js/components/review.js).
+
+```
+.zip / GitHub link ─► CodeBundle (read in memory, safely) ─► real metrics: files, lines, classes, functions, tests, README
+                                                         └─► fingerprint for similarity between students
+                    ─► Gemini: code (numbered lines) + the assignment requirements ─► JSON review
+                    ─► validate: every finding must cite a file that is in the submission, otherwise it is removed
+```
+
+| What you get | Where it comes from |
+|---|---|
+| Files, lines of code, classes, functions, test files, README | **Counted** from the files (always real, also without a key) |
+| Requirements met / partial / missing, SOLID, design patterns, what to fix, strengths, scores | **Gemini**, each with `file:line` evidence |
+| "N AI findings removed – they pointed to files that do not exist" | The check in `CodeReviewService.validate_review()` |
+| Similar code between students (% and matching files) | **Measured**: 5-token windows of the code, comments removed and names replaced, so renaming variables does not hide copying |
+| AI paragraph comparing two students | Gemini, using only the two reviews |
+
+- **No invented data:** the tab starts empty. Without `GEMINI_API_KEY` only the measured facts and similarity are shown – no scores.
+- **Requirements:** the review is made against the text in *Reviewed against*. It starts with the Ex2 requirements; the lecturer clicks **Edit** (only on the instructor computer) and pastes the real assignment.
+- **Privacy:** a student sees only the submissions uploaded from their own phone; the lecturer sees everyone, the similarity list and the comparison.
+- **Safety:** zips are read in memory (nothing extracted to disk), `../` paths, binaries, `node_modules`, `.git`, `venv` are skipped, max 30 MB / 600 files; GitHub links go only to `github.com` (public repos); uploads from phones are limited (3 per phone per hour, at most 3 reviews at once).
+- **Similarity is a hint, not proof** – shared starter code also counts. Check the matching files before deciding anything.
+
+---
+
 ## 🛡️ Anti-Spoofing & Anti-Screenshot Security
 
 ### Why WhatsApp/Telegram Screenshot Forwarding Fails:
@@ -510,7 +537,7 @@ Browser ──(file, streamed)──► server.py  POST /api/video/upload-file  
 ├── server.py                      # Multi-threaded zero-dependency HTTP(S) server (--https, --host, --tunnel)
 ├── certs/                         # Auto-generated self-signed HTTPS certificate (git-ignored)
 ├── tests/
-│   ├── test_app.py                # 33 unit tests (models, QR, 1 location test, one-phone lock, head count, CSV, concurrency, API, Gemini pipeline)
+│   ├── test_app.py                # 39 unit tests (models, QR, 1 location test, one-phone lock, head count, CSV, concurrency, API, Gemini pipeline, homework review)
 │   ├── load_test.py               # 150-300 simultaneous students over HTTP
 │   └── fake_gemini.py             # Local stand-in for the Gemini API (tests run without a key)
 ├── app/
@@ -521,7 +548,7 @@ Browser ──(file, streamed)──► server.py  POST /api/video/upload-file  
 │   │   ├── feedback.py            # Comments, categories, upvoting, & resolution
 │   │   ├── poll.py                # Poll, options, & real-time tally calculations
 │   │   ├── meeting_summary.py     # Lecture synthesis, action items, & transcripts
-│   │   └── homework_review.py     # LLM code reviews, SOLID compliance, & design patterns
+│   │   └── homework_review.py     # HomeworkSubmission: real metrics + validated AI review
 │   ├── repositories/
 │   │   ├── datastore.py           # Thread-safe In-Memory Repository (lock + roster version)
 │   │   └── seed_students.py       # Class list: 104 students (Hebrew first + last names)
@@ -532,7 +559,8 @@ Browser ──(file, streamed)──► server.py  POST /api/video/upload-file  
 │   │   ├── feedback_service.py    # Feedback stream & upvoting rules
 │   │   ├── poll_service.py        # Poll creation, state toggling, & vote recording
 │   │   ├── ml_summary_service.py  # Meeting transcript synthesis & dynamic regeneration
-│   │   └── code_review_service.py # Homework evaluation & side-by-side repo comparison
+│   │   ├── code_analysis.py       # Safe zip reading, real metrics, code similarity, GitHub download
+│   │   └── code_review_service.py # Homework review job, anti-hallucination check, comparison
 │   └── handlers/
 │       └── api_router.py          # Command / Front Controller REST API dispatcher
 └── static/                        # Frontend Single-Page Application (SPA)
@@ -556,7 +584,7 @@ Browser ──(file, streamed)──► server.py  POST /api/video/upload-file  
             ├── summary.js         # Class Video Upload & AI Summarization Suite
             ├── comments.js        # Comments & Question feed UI component
             ├── poll.js            # Live Polls & Dynamic percentage bars UI
-            ├── review.js          # Homework Deep Review & Side-by-side comparison UI
+            ├── review.js          # Homework upload, review, similar-code list, compare two students
             └── app.js             # Root coordinator initializing all modules
 ```
 
@@ -566,6 +594,11 @@ Browser ──(file, streamed)──► server.py  POST /api/video/upload-file  
 
 | Method | Endpoint | Description |
 |---|---|---|
+| `POST` | `/api/review/upload-zip` | Homework .zip (raw body, headers `X-Student-Name`, `X-Filename`, `X-Review-Language`) → starts the review |
+| `POST` | `/api/review/analyze` | `{repo_url, student_name, language}` – public GitHub repository → starts the review |
+| `GET` | `/api/review` | Submissions, requirements, Gemini status, similar pairs |
+| `GET` | `/api/review/compare?id_a=&id_b=` | Side by side + similarity % + matching files (+ AI paragraph) |
+| `POST` | `/api/review/requirements` | `{text}` – assignment requirements (instructor computer only) |
 | `GET` | `/api/session/active` | Active lecture session & base GPS coordinates |
 | `POST` | `/api/video/upload-file` | Upload a lecture recording (raw body, `Content-Type: video/*`, headers `X-Filename`, `X-Title`, `X-Topic`, `X-Summary-Language`) → starts the Gemini job; poll `/api/video/list` |
 | `GET` | `/api/server-info` | Address phones should use (`lan_origin`: LAN or tunnel URL) — used to build the QR |

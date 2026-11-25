@@ -315,10 +315,35 @@ class ApiClient {
     return this.request(`/api/review/compare?id_a=${idA}&id_b=${idB}`);
   }
 
-  static async analyzeRepo(repoUrl, studentName) {
+  static async analyzeRepo(repoUrl, studentName, language = 'en') {
     return this.request('/api/review/analyze', {
       method: 'POST',
-      body: JSON.stringify({ repo_url: repoUrl, student_name: studentName })
+      body: JSON.stringify({ repo_url: repoUrl, student_name: studentName, language })
+    });
+  }
+
+  static async setReviewRequirements(text) {
+    return this.request('/api/review/requirements', { method: 'POST', body: JSON.stringify({ text }) });
+  }
+
+  /** Uploads a homework .zip (raw body) – the server reads it in memory and starts the review job. */
+  static uploadHomeworkZip(file, studentName, language = 'en', onProgress = () => {}) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/review/upload-zip');
+      xhr.setRequestHeader('Content-Type', 'application/zip');
+      xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
+      xhr.setRequestHeader('X-Student-Name', encodeURIComponent(studentName));
+      xhr.setRequestHeader('X-Review-Language', language);
+      xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100)); };
+      xhr.onload = () => {
+        let data = {};
+        try { data = JSON.parse(xhr.responseText || '{}'); } catch (e) { /* non-JSON error page */ }
+        if (xhr.status >= 200 && xhr.status < 300) return resolve(data);
+        reject(new Error(data.error || `Upload failed (HTTP ${xhr.status}).`));
+      };
+      xhr.onerror = () => reject(new Error('Network error during upload – try again.'));
+      xhr.send(file);
     });
   }
 }

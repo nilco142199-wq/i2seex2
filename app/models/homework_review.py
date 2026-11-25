@@ -1,71 +1,63 @@
 """
-Homework Deep Review Domain Models.
-Encapsulates automated LLM code review, OOP metric evaluation, and multi-repo comparison.
+Homework Deep Review – domain model.
+
+A HomeworkSubmission is one student's real upload (a .zip or a public GitHub repository).
+  * metrics   – counted from the files (always real)
+  * review    – the LLM's review, validated against the files (None until it is ready / without a key)
+  * status    – "processing" → "completed" | "failed"
+Nothing in this model is invented: without an API key the review stays empty and the UI says so.
 """
-from typing import List, Dict, Any
+import time
+from typing import Any, Dict, List, Optional, Set
 
 
-class SolidCompliance:
-    def __init__(self, principle: str, status: str, critique: str):
-        self.principle = principle  # e.g., "Single Responsibility (SRP)"
-        self.status = status        # "pass", "warning", "fail"
-        self.critique = critique
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "principle": self.principle,
-            "status": self.status,
-            "critique": self.critique
-        }
-
-
-class SubmissionReview:
-    """
-    Domain entity representing an automated LLM evaluation of a student repository.
-    """
-    def __init__(
-        self,
-        submission_id: str,
-        student_id: str,
-        student_name: str,
-        repo_name: str,
-        branch: str,
-        commit_hash: str,
-        overall_score: int,
-        scores: Dict[str, int],  # e.g., {"architecture": 92, "solid": 88, "testing": 85, "clean_code": 90}
-        solid_compliance: List[SolidCompliance],
-        design_patterns: List[str],
-        code_smells: List[str],
-        ai_summary: str,
-        refactoring_suggestions: List[str]
-    ):
+class HomeworkSubmission:
+    def __init__(self, submission_id: str, student_name: str, source: str, source_label: str,
+                 files: List[str], metrics: Dict[str, Any], fingerprint: Set[int],
+                 file_fingerprints: Dict[str, Set[int]]):
         self.submission_id = submission_id
-        self.student_id = student_id
         self.student_name = student_name
-        self.repo_name = repo_name
-        self.branch = branch
-        self.commit_hash = commit_hash
-        self.overall_score = overall_score
-        self.scores = scores
-        self.solid_compliance = solid_compliance
-        self.design_patterns = design_patterns
-        self.code_smells = code_smells
-        self.ai_summary = ai_summary
-        self.refactoring_suggestions = refactoring_suggestions
+        self.source = source                    # "zip" | "github"
+        self.source_label = source_label        # file name or github.com/user/repo
+        self.files = files                      # paths that were read
+        self.metrics = metrics
+        self.fingerprint = fingerprint          # for comparing submissions with each other
+        self.file_fingerprints = file_fingerprints
+        self.uploaded_at = time.strftime("%d/%m %H:%M")
+        self.status = "processing"
+        self.stage = "Reading the code…"
+        self.error: Optional[str] = None
+        self.review: Optional[Dict[str, Any]] = None
+        self.ai_model: Optional[str] = None
+        self.omitted_files: List[str] = []      # too long to send to the model
+        self.removed_claims = 0                 # LLM findings dropped because their file does not exist
 
-    def to_dict(self) -> Dict[str, Any]:
+    @property
+    def overall_score(self) -> Optional[int]:
+        return (self.review or {}).get("overall_score")
+
+    def to_summary(self) -> Dict[str, Any]:
         return {
             "submission_id": self.submission_id,
-            "student_id": self.student_id,
             "student_name": self.student_name,
-            "repo_name": self.repo_name,
-            "branch": self.branch,
-            "commit_hash": self.commit_hash,
+            "source": self.source,
+            "source_label": self.source_label,
+            "uploaded_at": self.uploaded_at,
+            "status": self.status,
+            "stage": self.stage,
+            "error": self.error,
             "overall_score": self.overall_score,
-            "scores": self.scores,
-            "solid_compliance": [sc.to_dict() for sc in self.solid_compliance],
-            "design_patterns": self.design_patterns,
-            "code_smells": self.code_smells,
-            "ai_summary": self.ai_summary,
-            "refactoring_suggestions": self.refactoring_suggestions
+            "reviewed": self.review is not None,
+            "metrics": self.metrics,
         }
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = self.to_summary()
+        data.update({
+            "files": self.files,
+            "review": self.review,
+            "ai_model": self.ai_model,
+            "omitted_files": self.omitted_files,
+            "removed_claims": self.removed_claims,
+        })
+        return data

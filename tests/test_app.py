@@ -14,7 +14,7 @@ from app.models.student import Student
 from app.models.feedback import Comment
 from app.models.poll import Poll
 from app.models.meeting_summary import MeetingSummary
-from app.models.homework_review import SubmissionReview, SolidCompliance
+from app.models.homework_review import HomeworkSubmission
 from app.models.session import ClassSession, CheckInAttempt, haversine_distance
 from app.repositories.datastore import DataStore
 from app.services.attendance_service import AttendanceService
@@ -124,10 +124,10 @@ class TestServicesAndRouter(unittest.TestCase):
         self.assertTrue(res["success"])
         self.assertEqual(res["biometric_matches"], 6)
 
-    def test_side_by_side_review_comparison(self):
-        res = self.review_service.compare_submissions("sub-101", "sub-102")
-        self.assertTrue(res["success"])
-        self.assertIn("leader", res["comparison"])
+    def test_no_invented_homework_reviews(self):
+        """The review tab starts empty – nothing is shown that a student did not really upload."""
+        for sub in self.review_service.get_all_reviews():
+            self.assertTrue(sub["submission_id"].startswith("hw-"))
 
     def test_api_router_dispatch(self):
         code, body = self.router.handle("GET", "/api/status", b"")
@@ -505,6 +505,160 @@ class TestGeminiVideoPipeline(unittest.TestCase):
             self.assertEqual(client.last_model_used, "gemini-3.7-flash")
         finally:
             fake.stop()
+
+
+def _zip(files):
+    import io, zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, data in files.items():
+            zf.writestr(name, data)
+    return buf.getvalue()
+
+
+SHAPES = """from abc import ABC, abstractmethod
+
+
+class Shape(ABC):
+    @abstractmethod
+    def area(self):
+        ...
+
+    def describe(self):
+        return f"{type(self).__name__} with area {self.area():.2f}"
+
+
+class Circle(Shape):
+    def __init__(self, radius):
+        self.radius = radius
+
+    def area(self):
+        return 3.14 * self.radius * self.radius
+
+
+class Square(Shape):
+    def __init__(self, side):
+        self.side = side
+
+    def area(self):
+        return self.side * self.side
+"""
+SHAPES_RENAMED = SHAPES.replace("Shape", "Figure").replace("radius", "r").replace("side", "edge").replace("Circle", "Round")
+OTHER = """import json
+
+
+def load(path):
+    with open(path) as fh:
+        data = json.load(fh)
+    total = 0
+    for row in data:
+        if row.get("active"):
+            total += row["amount"]
+    return total
+
+
+def main():
+    print(load("data.json"))
+"""
+TESTS = "import unittest\nfrom src.shapes import Circle\n\nclass T(unittest.TestCase):\n    def test_area(self):\n        self.assertGreater(Circle(1).area(), 3)\n"
+
+
+class TestHomeworkReview(unittest.TestCase):
+    """Real homework review: safe zip reading, real metrics, validated LLM review, similarity between students."""
+
+    def setUp(self):
+        from app.services.gemini_client import GeminiClient
+        self.offline = CodeReviewService(DataStore(), gemini=GeminiClient(api_key=""))
+
+    def _wait(self, service, sub_id):
+        import time
+        for _ in range(200):
+            d = service.get_review_by_id(sub_id)
+            if d["status"] != "processing":
+                return d
+            time.sleep(0.02)
+        self.fail("review did not finish")
+
+    def test_zip_is_read_safely_and_metrics_are_real(self):
+        from app.services.code_analysis import CodeBundle
+        data = _zip({"proj/src/shapes.py": SHAPES, "proj/tests/test_shapes.py": TESTS, "proj/README.md": "# Shapes",
+                     "proj/../evil.py": "x = 1", "proj/node_modules/lib.js": "var a;", "proj/logo.png": b"\x89PNG\x00\x00",
+                     "proj/fake.py": b"\x00\x01binary"})
+        bundle = CodeBundle.from_zip_bytes(data)
+        self.assertEqual(sorted(bundle.files), ["README.md", "src/shapes.py", "tests/test_shapes.py"])
+        m = bundle.metrics()
+        self.assertEqual(m["classes"], 4)            # Shape, Circle, Square + test class T
+        self.assertEqual(m["test_files"], 1)
+        self.assertTrue(m["has_readme"])
+        self.assertEqual(m["skipped_files"], 4)
+
+    def test_bad_uploads_are_refused_with_a_reason(self):
+        res = self.offline.submit_zip(b"not a zip", "x.zip", "Dana")
+        self.assertFalse(res["success"]); self.assertIn("not a valid", res["error"])
+        res = self.offline.submit_zip(_zip({"notes.txt": "hello"}), "x.zip", "Dana")
+        self.assertFalse(res["success"]); self.assertIn("No source code", res["error"])
+        res = self.offline.submit_zip(_zip({"a.py": SHAPES}), "x.zip", "   ")
+        self.assertFalse(res["success"])
+        for url in ("https://gitlab.com/a/b", "http://169.254.169.254/latest", "github.com/a", "file:///etc/passwd"):
+            self.assertFalse(self.offline.submit_github(url, "Dana")["success"], url)
+
+    def test_without_api_key_nothing_is_invented(self):
+        res = self.offline.submit_zip(_zip({"src/shapes.py": SHAPES}), "hw.zip", "Dana")
+        self.assertTrue(res["success"])
+        d = self._wait(self.offline, res["submission"]["submission_id"])
+        self.assertEqual(d["status"], "completed")
+        self.assertIsNone(d["review"])               # no scores, no fake findings
+        self.assertIsNone(d["overall_score"])
+        self.assertEqual(d["metrics"]["classes"], 3)  # only real facts
+
+    def test_similarity_finds_copied_code_even_with_renamed_names(self):
+        a = self.offline.submit_zip(_zip({"src/shapes.py": SHAPES}), "a.zip", "Student A")["submission"]["submission_id"]
+        b = self.offline.submit_zip(_zip({"shapes.py": SHAPES_RENAMED}), "b.zip", "Student B")["submission"]["submission_id"]
+        c = self.offline.submit_zip(_zip({"load.py": OTHER}), "c.zip", "Student C")["submission"]["submission_id"]
+        for x in (a, b, c):
+            self._wait(self.offline, x)
+        ab = self.offline.compare_submissions(a, b, with_ai=False)["comparison"]
+        ac = self.offline.compare_submissions(a, c, with_ai=False)["comparison"]
+        self.assertGreaterEqual(ab["similarity"], 80)
+        self.assertLess(ac["similarity"], 20)
+        self.assertEqual(ab["matching_files"][0]["file_a"], "shapes.py")   # single top folder "src/" is stripped
+        pairs = self.offline.similarity_overview()
+        self.assertTrue(any({p["a"], p["b"]} == {a, b} for p in pairs))
+
+    def test_llm_review_is_checked_against_the_real_files(self):
+        from tests.fake_gemini import FakeGemini
+        from app.services.gemini_client import GeminiClient
+        fake = FakeGemini(retired_models=()).start()
+        try:
+            service = CodeReviewService(DataStore(), gemini=GeminiClient(api_key="k", base_url=fake.base_url))
+            res = service.submit_zip(_zip({"p/src/shapes.py": SHAPES, "p/tests/test_shapes.py": TESTS,
+                                           "p/README.md": "# Shapes"}), "hw.zip", "Dana")
+            d = self._wait(service, res["submission"]["submission_id"])
+            self.assertEqual(d["status"], "completed", d["error"])
+            r = d["review"]
+            self.assertEqual(r["overall_score"], 100)                          # clamped
+            self.assertEqual([p["name"] for p in r["design_patterns"]], ["Template Method"])  # ghost.py removed
+            self.assertEqual([i["file"] for i in r["issues"]], ["src/shapes.py"])            # database.py removed
+            self.assertEqual(r["solid"][0]["evidence"][0]["file"], "src/shapes.py")          # "shapes.py" resolved
+            uml = [q for q in r["requirements"] if q["requirement"] == "Class diagram"][0]
+            self.assertFalse(uml["verified"]); self.assertEqual(uml["evidence"], [])
+            self.assertEqual(d["removed_claims"], 3)
+            self.assertIn("Google Gemini", d["ai_model"])
+            self.assertIn("ASSIGNMENT REQUIREMENTS", fake.review_prompts[0])
+            self.assertIn("   9| ", fake.review_prompts[0])                     # numbered lines sent
+
+            other = service.submit_zip(_zip({"load.py": OTHER}), "c.zip", "Noa")["submission"]["submission_id"]
+            self._wait(service, other)
+            cmp = service.compare_submissions(d["submission_id"], other)
+            self.assertEqual(cmp["comparison"]["ai_comparison"], "Student A has tests; student B does not.")
+        finally:
+            fake.stop()
+
+    def test_requirements_can_be_set(self):
+        self.assertIn("Ex2", self.offline.get_requirements())
+        self.assertFalse(self.offline.set_requirements("x")["success"])
+        self.assertTrue(self.offline.set_requirements("1. Implement Observer. 2. Tests.")["success"])
+        self.assertIn("Observer", self.offline.get_requirements())
 
 
 if __name__ == "__main__":

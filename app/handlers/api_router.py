@@ -126,7 +126,10 @@ class ApiRouter:
             return 200, {"video": video}
 
         elif path == "/api/review":
-            return 200, {"submissions": self._review_service.get_all_reviews()}
+            return 200, {"submissions": self._review_service.get_all_reviews(),
+                         "llm": self._review_service.llm_status(),
+                         "requirements": self._review_service.get_requirements(),
+                         "similar_pairs": self._review_service.similarity_overview()}
 
         elif path == "/api/review/detail":
             sub_id = query.get("id", [None])[0]
@@ -297,9 +300,12 @@ class ApiRouter:
 
         # Homework Review Routes
         elif path == "/api/review/analyze":
-            repo_url = data.get("repo_url", "")
-            student_name = data.get("student_name", "Student")
-            res = self._review_service.analyze_repo(repo_url, student_name)
+            res = self._review_service.submit_github(data.get("repo_url", ""), data.get("student_name", ""),
+                                                     language=data.get("language", "en"))
             return (201, res) if res.get("success") else (400, res)
+
+        elif path == "/api/review/requirements":
+            res = self._review_service.set_requirements(data.get("text", ""))
+            return (200, res) if res.get("success") else (400, res)
 
         return 404, {"error": f"API endpoint not found: {path}"}

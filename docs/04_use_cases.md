@@ -93,7 +93,7 @@ flowchart LR
 **Actor:** Instructor. **Flow:** uploads a Zoom/Meet/Classroom recording → gets executive summary, chapters with timestamps, key takeaways, action items → asks questions about the lecture. The recording is analysed by Google Gemini (demo mode, clearly labelled, when no API key is set). **Alternative flow:** the model fails or the key is invalid → the lecture is marked *Failed* with the reason, nothing is invented.
 
 ### UC-10 Review & compare homework
-**Actors:** Instructor, Student. **Flow:** enters a repository URL → deep review (scores, SOLID, patterns, code smells, refactoring tips) → compares two submissions side by side. *(Model output simulated in the demo.)*
+**Actors:** Instructor, Student. **Flow:** student uploads a .zip or a GitHub link → Gemini reviews it against the assignment requirements (met/missing, SOLID, patterns, problems, each with file:line) → the lecturer sees all submissions, the list of similar-code pairs, and compares two students side by side. **Alternative flows:** not a zip / no source code → clear error; no API key → measured facts only; AI cites a file that does not exist → that finding is removed and counted.
 
 ### UC-11 Join the roster (self-registration)
 **Actor:** Student not on the list. **Flow:** *Not on the list? Add yourself* → student ID + full name → added and selected. **Rule:** one self-registration per phone per session.

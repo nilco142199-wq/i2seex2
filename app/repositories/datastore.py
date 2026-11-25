@@ -9,7 +9,7 @@ from app.repositories.seed_students import generate_roster, DEFAULT_CLASS_SIZE
 from app.models.feedback import Comment
 from app.models.poll import Poll
 from app.models.meeting_summary import MeetingSummary, ActionItem, TranscriptSnippet
-from app.models.homework_review import SubmissionReview, SolidCompliance
+from app.models.homework_review import HomeworkSubmission
 from app.models.session import (
     ClassSession, CheckInAttempt,
     ARIEL_UNIVERSITY_NAME, ARIEL_UNIVERSITY_LAT, ARIEL_UNIVERSITY_LNG, DEFAULT_RADIUS_METERS
@@ -36,7 +36,7 @@ class DataStore:
         self._polls: Dict[str, Poll] = {}
         self._active_poll_id: Optional[str] = None
         self._meeting_summary: Optional[MeetingSummary] = None
-        self._submissions: Dict[str, SubmissionReview] = {}
+        self._submissions: Dict[str, HomeworkSubmission] = {}  # real uploads only – no seeded reviews
         self._session: Optional[ClassSession] = None
         # Concurrency: one re-entrant lock serialises every attendance write, so 100+ students
         # checking in at the same second can never corrupt the roster.
@@ -178,113 +178,7 @@ class DataStore:
             engagement_score=92.4
         )
 
-        # 5. Seed Homework Deep Reviews
-        rev_alex = SubmissionReview(
-            submission_id="sub-101",
-            student_id="s101",
-            student_name="גיא אביב",
-            repo_name="alex-rivera/oop-classroom-tool",
-            branch="main",
-            commit_hash="7f3c91a",
-            overall_score=94,
-            scores={
-                "architecture": 96,
-                "solid_compliance": 92,
-                "clean_code": 95,
-                "testability": 90
-            },
-            solid_compliance=[
-                SolidCompliance("Single Responsibility (SRP)", "pass", "Models and Services are cleanly decoupled into dedicated modules."),
-                SolidCompliance("Open/Closed Principle (OCP)", "pass", "New report generators can be added via polymorphic base classes."),
-                SolidCompliance("Liskov Substitution (LSP)", "pass", "Derived entities honor the contracts of their base types without side effects."),
-                SolidCompliance("Interface Segregation (ISP)", "pass", "Narrow role-based protocols prevent unnecessary method implementation."),
-                SolidCompliance("Dependency Inversion (DIP)", "warning", "Direct instantiation of DataStore in some service methods; consider dependency injection.")
-            ],
-            design_patterns=["Repository Pattern", "Singleton", "Facade (ApiClient)", "Observer Pattern"],
-            code_smells=["Minor duplicate validation logic in student name format"],
-            ai_summary=(
-                "Outstanding submission! Highly cohesive structure with crystal clear OOP boundaries. "
-                "Data structures are properly encapsulated with properties, and the in-memory repository "
-                "provides an elegant abstraction. Code is readable, well-commented, and ready for production."
-            ),
-            refactoring_suggestions=[
-                "Inject the repository into services rather than calling DataStore() directly for enhanced unit testing.",
-                "Extract validation logic into a shared Validator helper class."
-            ]
-        )
-
-        rev_elena = SubmissionReview(
-            submission_id="sub-102",
-            student_id="s102",
-            student_name="ליאל אבידור",
-            repo_name="elena-r/interactive-teaching-platform",
-            branch="feature/vibe-prototype",
-            commit_hash="4a8d11c",
-            overall_score=86,
-            scores={
-                "architecture": 84,
-                "solid_compliance": 85,
-                "clean_code": 88,
-                "testability": 82
-            },
-            solid_compliance=[
-                SolidCompliance("Single Responsibility (SRP)", "pass", "Presentation and business logic are distinct."),
-                SolidCompliance("Open/Closed Principle (OCP)", "warning", "Adding a new feedback category requires modifying the enum in two places."),
-                SolidCompliance("Liskov Substitution (LSP)", "pass", "Substitutability preserved across polymorphic models."),
-                SolidCompliance("Interface Segregation (ISP)", "pass", "Clean separation of responsibilities."),
-                SolidCompliance("Dependency Inversion (DIP)", "pass", "High-level controllers rely on abstract service handlers.")
-            ],
-            design_patterns=["Strategy Pattern", "Data Mapper", "Observer"],
-            code_smells=["Slightly long handler method in HTTP request router (~65 lines)"],
-            ai_summary=(
-                "Strong work with great intuitive UI and solid domain separation. "
-                "The routing layer could benefit from being broken down into discrete sub-routers, "
-                "but the object-oriented abstractions in the domain layer are exemplary."
-            ),
-            refactoring_suggestions=[
-                "Break down the monolithic HTTP dispatch method into modular sub-command handlers.",
-                "Convert feedback category string matching into a polymorphic Category Strategy."
-            ]
-        )
-
-        rev_david = SubmissionReview(
-            submission_id="sub-103",
-            student_id="s103",
-            student_name="דולב אהרון",
-            repo_name="david-kim/cs-teach-dashboard",
-            branch="master",
-            commit_hash="2b9e602",
-            overall_score=72,
-            scores={
-                "architecture": 70,
-                "solid_compliance": 68,
-                "clean_code": 75,
-                "testability": 74
-            },
-            solid_compliance=[
-                SolidCompliance("Single Responsibility (SRP)", "warning", "Datastore model handles both persistence and HTTP formatting."),
-                SolidCompliance("Open/Closed Principle (OCP)", "warning", "Poll evaluation uses chained if-elif branches instead of polymorphism."),
-                SolidCompliance("Liskov Substitution (LSP)", "pass", "No contract violations detected."),
-                SolidCompliance("Interface Segregation (ISP)", "warning", "Fat interface includes unused serialisation hooks."),
-                SolidCompliance("Dependency Inversion (DIP)", "warning", "Tight coupling between HTTP handler and raw dictionary state.")
-            ],
-            design_patterns=["Singleton (Basic)"],
-            code_smells=["God Class candidate in server routing", "Primitive Obsession with raw dicts", "Magic Strings"],
-            ai_summary=(
-                "Functional prototype, but architecture exhibits high coupling. Domain logic is mixed "
-                "directly into HTTP responses without dedicated service intermediaries. Refactoring to "
-                "distinct Model-Service-Handler layers will elevate this to an A-grade standard."
-            ),
-            refactoring_suggestions=[
-                "Separate domain entities into explicit classes with private attributes and properties.",
-                "Implement a Service layer to encapsulate business rules away from the HTTP transport layer.",
-                "Replace raw string keys with strongly-typed properties or data transfer objects."
-            ]
-        )
-
-        self._submissions[rev_alex.submission_id] = rev_alex
-        self._submissions[rev_elena.submission_id] = rev_elena
-        self._submissions[rev_david.submission_id] = rev_david
+        # 5. Homework reviews start empty: only real student uploads are reviewed (no invented examples).
 
     # Data Access Methods
     def get_all_students(self) -> List[Student]:
@@ -327,11 +221,16 @@ class DataStore:
     def get_meeting_summary(self) -> Optional[MeetingSummary]:
         return self._meeting_summary
 
-    def get_all_reviews(self) -> List[SubmissionReview]:
+    def get_all_reviews(self) -> List[HomeworkSubmission]:
         return list(self._submissions.values())
 
-    def get_review(self, submission_id: str) -> Optional[SubmissionReview]:
+    def get_review(self, submission_id: str) -> Optional[HomeworkSubmission]:
         return self._submissions.get(submission_id)
+
+    def add_review(self, submission: HomeworkSubmission) -> HomeworkSubmission:
+        with self.lock:
+            self._submissions[submission.submission_id] = submission
+        return submission
 
     def get_active_session(self) -> Optional[ClassSession]:
         return self._session

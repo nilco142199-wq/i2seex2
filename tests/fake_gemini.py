@@ -22,11 +22,34 @@ HEBREW_SUMMARY = {
 }
 
 
+HOMEWORK_REVIEW = {
+    "summary": "Shapes are modelled with an abstract base class; tests exist.",
+    "overall_score": 140,          # out of range on purpose → must be clamped to 100
+    "scores": {"requirements": 70, "oop_design": 85, "solid": 80, "code_quality": 75, "testing": 60, "documentation": 50},
+    "requirements": [
+        {"requirement": "README", "status": "met", "evidence": [{"file": "README.md"}], "comment": "Has run steps."},
+        {"requirement": "Tests", "status": "met", "evidence": [{"file": "tests/test_shapes.py", "line": 3}], "comment": "ok"},
+        {"requirement": "Class diagram", "status": "met", "evidence": [{"file": "docs/uml.md"}], "comment": "invented file"},
+    ],
+    "solid": [{"principle": "Open/Closed", "status": "pass", "evidence": [{"file": "shapes.py", "line": 1}], "comment": "new shapes subclass Shape"}],
+    "design_patterns": [
+        {"name": "Template Method", "evidence": [{"file": "src/shapes.py", "line": 4}], "explanation": "area() hook"},
+        {"name": "Singleton", "evidence": [{"file": "src/ghost.py"}], "explanation": "invented"},
+    ],
+    "issues": [
+        {"severity": "low", "file": "src/shapes.py", "line": 9, "problem": "magic number 3.14", "fix": "use math.pi"},
+        {"severity": "high", "file": "src/database.py", "problem": "SQL injection", "fix": "invented file"},
+    ],
+    "strengths": [{"text": "Clear abstraction", "evidence": [{"file": "src/shapes.py"}]}],
+}
+
+
 class FakeGemini:
     def __init__(self, processing_polls=2, retired_models=("gemini-3.8-flash",), busy_models=()):
         self.processing_polls = processing_polls
         self.retired_models = set(retired_models)
         self.busy_models = set(busy_models)   # always answer 503 "high demand"
+        self.review_prompts = []
         self.uploaded_bytes = 0
         self.requests = []          # (method, path) log
         self.generate_bodies = []   # parsed generateContent bodies
@@ -72,6 +95,16 @@ class FakeGemini:
                     req = json.loads(body)
                     outer.generate_bodies.append((model, req))
                     parts = req["contents"][0]["parts"]
+                    first_text = parts[0].get("text", "")
+                    if first_text.startswith("HOMEWORK REVIEW"):
+                        assert "ASSIGNMENT REQUIREMENTS" in first_text and "===== FILE: " in first_text
+                        assert req["generationConfig"]["responseMimeType"] == "application/json"
+                        outer.review_prompts.append(first_text)
+                        return self._json(200, {"candidates": [{"content": {"parts": [
+                            {"text": json.dumps(HOMEWORK_REVIEW, ensure_ascii=False)}]}}]})
+                    if first_text.startswith("Compare these two homework reviews"):
+                        return self._json(200, {"candidates": [{"content": {"parts": [
+                            {"text": "Student A has tests; student B does not."}]}}]})
                     assert parts[0]["file_data"]["file_uri"] == "https://fake/files/abc123"
                     prompt = parts[1]["text"]
                     if "Question:" in prompt:

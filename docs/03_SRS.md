@@ -78,13 +78,15 @@ Specify the behaviour of the **CS302 Interactive Classroom Suite**, a web applic
 ### FR-R Homework deep review
 | ID | Requirement | Priority |
 |---|---|---|
-| FR-R1 | The system shall analyse a submission (repository URL) and report scores, SOLID compliance, design patterns, code smells and refactoring suggestions. | Must |
-| FR-R2 | The system shall compare two submissions side by side. | Must |
+| FR-R1 | The system shall accept a submission as a .zip or a public GitHub link and review it against the assignment requirements: requirements met/partial/missing, SOLID, design patterns, problems with fixes, scores. | Must |
+| FR-R2 | The system shall compare two submissions side by side and measure how similar their code is. | Must |
+| FR-R3 | Every finding shall cite a file (and line) in the submission; findings that cite files not in the submission shall be removed. | Must |
+| FR-R4 | Without an LLM key the system shall show only measured facts and never invent scores. | Must |
 
 ## 3.4 Implementation status of the LLM / ML requirements
 
 - **FR-V (video summary) uses a real LLM.** `VideoSummaryService.start_video_job()` streams the uploaded recording to the **Google Gemini Files API** through `GeminiClient`, waits until it is processed, and asks the model for a summary that must follow a JSON schema (summary, chapters, takeaways, action items, quotes, topics). Q&A sends the question with the same recording. The key comes from the `GEMINI_API_KEY` environment variable; without it the feature runs in a clearly labelled **demo mode**.
-- **FR-R (homework review)** is implemented end-to-end (UI, API, service, data model) but the model call is still **simulated** in `CodeReviewService.analyze_repo()`. Connecting it uses the same `GeminiClient.generate()`; the rest of the system does not change.
+- **FR-R (homework review) uses a real LLM.** `CodeBundle` reads the zip, `GeminiClient.review_homework()` returns a JSON review that `CodeReviewService.validate_review()` checks against the real file list. Similarity between students is computed locally (no LLM).
 
 ## 3.5 Non-functional requirements
 
@@ -129,5 +131,5 @@ Specify the behaviour of the **CS302 Interactive Classroom Suite**, a web applic
 | FR-C1, FR-C2 | `FeedbackService`, `Comment` | `test_comment_upvote_and_resolve` |
 | FR-P1, FR-P2 | `PollService`, `Poll`, `PollOption` | `test_poll_voting_and_results` |
 | FR-V1, FR-V2 | `VideoSummaryService`, `VideoLecture` | `test_video_upload_and_llm_summarization` |
-| FR-R1, FR-R2 | `CodeReviewService`, `SubmissionReview` | `test_side_by_side_review_comparison` |
+| FR-R1–R4 | `CodeReviewService`, `CodeBundle`, `HomeworkSubmission` | `TestHomeworkReview` (6 tests) |
 | NFR-1, NFR-5 | `@_synchronized`, `ThreadedHTTPServer` | `test_concurrent_checkins_of_whole_class`, `tests/load_test.py` |

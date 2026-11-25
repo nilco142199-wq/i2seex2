@@ -278,3 +278,84 @@ class GeminiClient:
             return json.loads(text)
         except json.JSONDecodeError:
             return {"answer": text.strip(), "timestamp": ""}
+
+    # ------------------------------------------------------------------ homework review
+    _EVIDENCE = {"type": "OBJECT", "properties": {
+        "file": {"type": "STRING"}, "line": {"type": "INTEGER"}}, "required": ["file"]}
+    REVIEW_SCHEMA: Dict[str, Any] = {
+        "type": "OBJECT",
+        "properties": {
+            "summary": {"type": "STRING"},
+            "overall_score": {"type": "INTEGER"},
+            "scores": {"type": "OBJECT", "properties": {
+                "requirements": {"type": "INTEGER"}, "oop_design": {"type": "INTEGER"},
+                "solid": {"type": "INTEGER"}, "code_quality": {"type": "INTEGER"},
+                "testing": {"type": "INTEGER"}, "documentation": {"type": "INTEGER"}},
+                "required": ["requirements", "oop_design", "solid", "code_quality", "testing", "documentation"]},
+            "requirements": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
+                "requirement": {"type": "STRING"},
+                "status": {"type": "STRING", "enum": ["met", "partial", "missing"]},
+                "evidence": {"type": "ARRAY", "items": _EVIDENCE},
+                "comment": {"type": "STRING"}}, "required": ["requirement", "status", "comment"]}},
+            "solid": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
+                "principle": {"type": "STRING"},
+                "status": {"type": "STRING", "enum": ["pass", "warning", "fail", "not_applicable"]},
+                "evidence": {"type": "ARRAY", "items": _EVIDENCE},
+                "comment": {"type": "STRING"}}, "required": ["principle", "status", "comment"]}},
+            "design_patterns": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
+                "name": {"type": "STRING"},
+                "evidence": {"type": "ARRAY", "items": _EVIDENCE},
+                "explanation": {"type": "STRING"}}, "required": ["name", "evidence", "explanation"]}},
+            "issues": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
+                "severity": {"type": "STRING", "enum": ["high", "medium", "low"]},
+                "file": {"type": "STRING"}, "line": {"type": "INTEGER"},
+                "problem": {"type": "STRING"}, "fix": {"type": "STRING"}},
+                "required": ["severity", "file", "problem", "fix"]}},
+            "strengths": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
+                "text": {"type": "STRING"}, "evidence": {"type": "ARRAY", "items": _EVIDENCE}},
+                "required": ["text"]}},
+        },
+        "required": ["summary", "overall_score", "scores", "requirements", "solid", "design_patterns",
+                     "issues", "strengths"],
+    }
+
+    def review_homework(self, code_text: str, requirements: str, student_name: str = "",
+                        language: str = "en") -> Dict[str, Any]:
+        """Deep review of one submission. code_text = file tree + numbered file contents (CodeBundle)."""
+        lang = "Write every text field in Hebrew." if language == "he" else "Write every text field in English."
+        prompt = (
+            "HOMEWORK REVIEW. You are a strict but fair teaching assistant in an Object-Oriented Programming and "
+            "Software Engineering course. Review the student's submission below against the assignment "
+            "requirements.\n"
+            "RULES – follow them exactly:\n"
+            "1. Use ONLY the files shown below. Never assume code, files, tests or documents that are not shown.\n"
+            "2. Every requirement, SOLID verdict, design pattern, issue and strength must cite evidence: the exact "
+            "file path as written in the FILE TREE, and the line number when relevant (the numbers before '|').\n"
+            "3. If something required is not in the files, mark it 'missing' – do not guess that it exists.\n"
+            "4. Report a design pattern only if its structure is really in the code; otherwise return an empty list.\n"
+            "5. Scores are 0-100 and must match the findings (missing requirements → low requirements score).\n"
+            "6. Issues: the most important 3-10 real problems, each with a concrete fix. Strengths: 2-5.\n"
+            f"7. {lang}\n\n"
+            f"ASSIGNMENT REQUIREMENTS:\n{requirements.strip() or 'General OOP homework: correct, well-designed, tested and documented code.'}\n\n"
+            + (f"STUDENT: {student_name}\n\n" if student_name else "")
+            + "SUBMISSION:\n" + code_text
+        )
+        text = self.generate([{"text": prompt}], response_schema=self.REVIEW_SCHEMA, temperature=0.2)
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            raise GeminiError("Gemini's answer was not valid JSON – try again.")
+
+    def compare_homework(self, review_a: Dict[str, Any], review_b: Dict[str, Any],
+                         name_a: str, name_b: str, similarity_percent: int, language: str = "en") -> str:
+        """Short written comparison of two reviews that already exist (no new facts are introduced)."""
+        lang = "Answer in Hebrew." if language == "he" else "Answer in English."
+        prompt = (
+            "Compare these two homework reviews in 4-6 sentences for the lecturer: where each submission is "
+            "stronger, which requirements one met and the other did not, and what each should fix first. Use only "
+            f"the facts in the two reviews. {lang}\n"
+            f"Measured code similarity between the two submissions: {similarity_percent}%.\n\n"
+            f"REVIEW OF {name_a}:\n{json.dumps(review_a, ensure_ascii=False)[:20000]}\n\n"
+            f"REVIEW OF {name_b}:\n{json.dumps(review_b, ensure_ascii=False)[:20000]}"
+        )
+        return self.generate([{"text": prompt}], temperature=0.2).strip()

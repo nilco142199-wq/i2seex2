@@ -9,7 +9,7 @@ A single web application, started with one command (`python3 server.py --tunnel`
 | 2. Comments & suggestions | Live, by category, anonymous option, upvote, resolve |
 | 3. Polls | Created in seconds, one vote per student, live results |
 | 4. Video ML summary | Upload → **Google Gemini** summary, clickable chapters, takeaways, action items, Q&A *(demo mode without an API key)* |
-| 5. Homework deep review | Scores, SOLID, patterns, code smells, side-by-side comparison *(model output simulated)* |
+| 5. Homework deep review | .zip / GitHub → **Gemini** review against the requirements, every finding with file:line, invented findings removed; measured code similarity + side-by-side comparison |
 
 ## 9.2 Measured results
 | Metric | Result |
@@ -32,12 +32,12 @@ A single web application, started with one command (`python3 server.py --tunnel`
 - Data is **in memory**: restarting the server clears the session (export the CSV first).
 - **No authentication**: anyone with the link can open instructor mode; students are identified by device, not by account.
 - A student with **two phones** or who wipes all site data gets a new device identity (still needs to be in the room).
-- Homework review returns **simulated** model output. Video summaries need the lecturer's own free Gemini API key and internet; uploads through the public tunnel are limited to 100 MB (use localhost for long recordings).
+- Homework review: the AI score is advice for the lecturer, not a grade; similarity is a hint (shared starter code also counts). Long projects may not fit entirely (the files left out are listed). Video summaries need the lecturer's own free Gemini API key and internet; uploads through the public tunnel are limited to 100 MB (use localhost for long recordings).
 - Photo head count needs **internet** the first time (model download) and is advisory.
 
 ## 9.5 Future work
 1. University **SSO** login for students and instructors → closes the two-phone gap and protects instructor mode.
-2. Connect `CodeReviewService` to the same `GeminiClient` that already powers the video summaries.
+2. Let the lecturer approve or edit an AI review before students see it.
 3. Persist data in a database (only `DataStore` changes).
 4. Push updates with Server-Sent Events instead of polling.
 5. Import the real class list (CSV) from the course folder.

@@ -191,27 +191,29 @@ classDiagram
     MeetingSummary "1" *-- "*" ActionItem
     MeetingSummary "1" *-- "*" TranscriptSnippet
 
-    class SubmissionReview {
+    class HomeworkSubmission {
         +str submission_id
-        +str student_id
         +str student_name
-        +str repo_name
-        +str commit_hash
-        +int overall_score
-        +dict scores
-        +List~SolidCompliance~ solid_compliance
-        +List design_patterns
-        +List code_smells
-        +str ai_summary
-        +List refactoring_suggestions
+        +str source
+        +str source_label
+        +List files
+        +dict metrics
+        +set fingerprint
+        +str status
+        +dict review
+        +int removed_claims
+        +overall_score() int
+        +to_summary() dict
         +to_dict() dict
     }
-    class SolidCompliance {
-        +str principle
-        +str status
-        +str critique
+    class CodeBundle {
+        +Dict~str,str~ files
+        +from_zip_bytes(data)$ CodeBundle
+        +metrics() dict
+        +prompt_text() str
+        +fingerprint() set
     }
-    SubmissionReview "1" *-- "5" SolidCompliance
+    CodeBundle ..> HomeworkSubmission : fills metrics and fingerprint
 ```
 
 ---
@@ -230,7 +232,7 @@ classDiagram
         -Dict~str,Poll~ _polls
         -str _active_poll_id
         -MeetingSummary _meeting_summary
-        -Dict~str,SubmissionReview~ _submissions
+        -Dict~str,HomeworkSubmission~ _submissions
         -ClassSession _session
         +RLock lock
         +int roster_version
@@ -242,7 +244,8 @@ classDiagram
         +add_comment(c) Comment
         +get_active_poll() Poll
         +save_poll(p) Poll
-        +get_all_reviews() List~SubmissionReview~
+        +get_all_reviews() List~HomeworkSubmission~
+        +add_review(s) HomeworkSubmission
         +get_meeting_summary() MeetingSummary
         +get_active_session() ClassSession
         +set_session(s) ClassSession
@@ -305,12 +308,18 @@ classDiagram
         +generate(parts, response_schema) dict
         +summarize_lecture(file_info, title, topic, language) dict
         +ask_about_lecture(file_uri, mime_type, question) dict
+        +review_homework(code, requirements, student, language) dict
+        +compare_homework(review_a, review_b, ...) str
     }
     class CodeReviewService {
-        +get_all_reviews() List
-        +get_review_by_id(id) dict
+        -GeminiClient _gemini
+        -str _requirements
+        +submit_zip(data, filename, student, language) dict
+        +submit_github(url, student, language) dict
+        +validate_review(review, files)$ tuple
+        +similarity_overview() List
         +compare_submissions(id_a, id_b) dict
-        +analyze_repo(repo_url, student_name) dict
+        +set_requirements(text) dict
     }
 
     class ApiRouter {
@@ -347,6 +356,7 @@ classDiagram
     MLSummaryService --> DataStore
     CodeReviewService --> DataStore
     VideoSummaryService --> GeminiClient
+    CodeReviewService --> GeminiClient
     AttendanceService ..> synchronized : every write
     DataStore o-- Student
     DataStore o-- ClassSession

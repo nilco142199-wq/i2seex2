@@ -286,12 +286,15 @@ sequenceDiagram
     FE->>R: POST /api/video/qa
     R->>V: ask_video_qa()
 
-    I->>FE: analyse a student repo / compare two
-    FE->>R: POST /api/review/analyze · GET /api/review/compare
-    R->>C: analyze_repo() · compare_submissions()
+    St->>FE: upload homework .zip / GitHub link
+    FE->>R: POST /api/review/upload-zip · POST /api/review/analyze
+    R->>C: submit_zip() / submit_github() → background review (Gemini + evidence check)
+    I->>FE: compare two students
+    FE->>R: GET /api/review/compare
+    R->>C: compare_submissions() → scores + similarity + matching files
 ```
 
-> The video summary calls the real Google Gemini API (sequence below). The homework review still returns simulated model output; see the SRS (§3.4).
+> The video summary calls the real Google Gemini API (sequence below). The homework review also uses Gemini, and its answer is checked against the submitted files (SRS §3.4).
 
 ### Video upload → Gemini summary
 

@@ -31,7 +31,7 @@ flowchart TB
             CR[CodeReviewService]
         end
         Repo[(DataStore<br/>in-memory repository<br/>lock · roster_version)]
-        Models[Domain models<br/>Student · ClassSession · CheckInAttempt ·<br/>Comment · Poll · VideoLecture · SubmissionReview]
+        Models[Domain models<br/>Student · ClassSession · CheckInAttempt ·<br/>Comment · Poll · VideoLecture · HomeworkSubmission]
     end
 
     Sheets[(Google Sheets<br/>IMPORTDATA)]
@@ -51,6 +51,8 @@ flowchart TB
     Repo --- Models
     HC -. "model download (once)" .-> CDN
     VS -- "GeminiClient: upload video, get summary" --> Gemini
+    CR -- "GeminiClient: review code" --> Gemini
+    CR -. "public repos" .-> GH[(GitHub)]
     Sheets -- "/api/attendance/export.csv" --> Tunnel
 ```
 

@@ -36,12 +36,14 @@
 | `VideoSummaryService` | `test_video_upload_and_llm_summarization` | Upload produces summary, chapters, takeaways |
 | `VideoSummaryService` + `GeminiClient` | `test_recording_is_uploaded_processed_and_summarised`, `test_without_api_key_result_is_labelled_simulated` (against `tests/fake_gemini.py`) | Real file reaches the API, processing is awaited, retired model → fallback, summary applied and not marked demo; without a key → labelled simulated |
 | Video page (JS) | browser test: real 20 s MP4 → fake Gemini | Progress → Hebrew summary, chapter click seeks the player, Q&A answer with timestamp |
-| `CodeReviewService` | `test_side_by_side_review_comparison` | Comparison of two submissions |
+| `CodeBundle` | `test_zip_is_read_safely_and_metrics_are_real`, `test_bad_uploads_are_refused_with_a_reason` | `../` paths, binaries, node_modules skipped; counts correct; non-zip / no code / non-GitHub URLs refused |
+| `CodeReviewService` | `test_no_invented_homework_reviews`, `test_without_api_key_nothing_is_invented`, `test_similarity_finds_copied_code_even_with_renamed_names`, `test_llm_review_is_checked_against_the_real_files`, `test_requirements_can_be_set` | Empty at start; no scores without a key; renamed copy ≥ 80 %, unrelated < 20 %; findings citing invented files removed (3 of 3), score clamped |
+| Homework page (JS) | browser test: student uploads, lecturer uploads two more | Student sees only own; lecturer sees 3, similar pair 76 %, comparison table + AI paragraph |
 | `HeadCounter` (JS) | browser test with a stand-in detector | Tiling covers the image; duplicates across tiles merged (36 of 36 faces) |
 | `QREngine` (JS) | browser test with a fake camera showing the projected QR | QR rendered by the instructor view decodes in the student view |
 | `ThreadedHTTPServer` | `tests/load_test.py` | 150 students: 0 failures, p95 verify ≈ 250 ms; 300 students: 0 failures |
 
-**Current result:** `Ran 33 tests … OK` and load test `✅ PASS` (150 and 300 students).
+**Current result:** `Ran 39 tests … OK` and load test `✅ PASS` (150 and 300 students).
 
 ## 8.4 Test data
 - Roster = the **lecturer's class list: 104 students**, Hebrew names, no ID numbers (`seed_students.py`); everyone starts absent.
@@ -65,5 +67,5 @@ Flows exercised in Chrome: instructor QR → fake-camera scan → check-in; deni
 ## 8.7 Known gaps
 - Face-detection accuracy can only be measured on real class photos (checklist #6).
 - The Gemini pipeline is tested against `tests/fake_gemini.py` (same API, local), so tests check the flow and the labelling, not the quality of a real model's summary; that is checked by hand with a real key.
-- Homework review uses simulated model output, so its tests check structure only.
+- Homework review is tested against the fake Gemini (which deliberately cites files that do not exist); the quality of a real review is checked by hand.
 - No automated test runs on a physical phone; that is covered by the manual checklist.
