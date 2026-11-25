@@ -1,83 +1,135 @@
 """
-Demo roster: 120 students with Israeli names (deterministic, so every run looks the same).
+Class roster: the real class list provided by the lecturer (names only – no ID numbers).
 
-Everyone starts absent (no invented check-ins). The first ten students keep fixed IDs because the demo data (comments, homework
-reviews) and the unit tests refer to them. The rest are generated from common Israeli
-first and last names.
+Each entry is (first name, last name), exactly as in the course list.
+Students get demo IDs s101, s102, … in list order, and everyone starts as NOT checked in –
+attendance only comes from real check-ins.
 """
-import random
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
-DEFAULT_CLASS_SIZE = 120
-EMAIL_DOMAIN = "students.example.ac.il"  # deliberately fake domain
+EMAIL_DOMAIN = "students.example.ac.il"  # deliberately fake domain (no real e-mail addresses)
 
-# (student_id, name, is_present, check_in_time, method, distance_meters)
-FIXED_STUDENTS: List[Tuple[str, str, bool, Optional[str], str, Optional[float]]] = [
-    ("s101", "Noa Cohen", False, None, "none", None),
-    ("s102", "Yonatan Levi", False, None, "none", None),
-    ("s103", "Itai Mizrahi", False, None, "none", None),
-    ("s104", "Tamar Peretz", False, None, "none", None),
-    ("s105", "Omer Biton", False, None, "none", None),
-    ("s106", "Shira Friedman", False, None, "none", None),
-    ("s107", "Daniel Avraham", False, None, "none", None),
-    ("s108", "Ariel Dahan", False, None, "none", None),
-    ("s109", "Maya Azoulay", False, None, "none", None),
-    ("s110", "Yousef Haddad", False, None, "none", None),
+# (first name, last name)
+CLASS_LIST: List[Tuple[str, str]] = [
+    ("גיא", "אביב"),
+    ("ליאל", "אבידור"),
+    ("דולב", "אהרון"),
+    ("דניאל שלמה", "אהרן"),
+    ("נועם יעקב", "אוחיון"),
+    ("עילאי", "אור חן"),
+    ("רוסול", "איוב"),
+    ("איתי", "אלוני"),
+    ("רון", "אליהו"),
+    ("טליה", "אלמליח"),
+    ("גאשאו", "אמבאו"),
+    ("בניה", "אמיתי"),
+    ("ביאן", "אסדי"),
+    ("גלעד", "אפל"),
+    ("מיכל", "אפריים"),
+    ("עמירם", "אשכנזי"),
+    ("סלמאן", "בטחיש"),
+    ("יובל", "ביתאן"),
+    ("תאלא", "בכר"),
+    ("בועז", "בן משה"),
+    ("אוהד", "בן נון"),
+    ("רועי", "בנימינוב"),
+    ("לירון", "בסן"),
+    ("חיים נועם", "ברבי"),
+    ("אייל", "ברקוביץ"),
+    ("דוחא", "גבאלי"),
+    ("תמר", "גורדון"),
+    ("עילאי", "גורן"),
+    ("רואי", "גיל"),
+    ("עינב", "גרוס"),
+    ("שרה", "גרין"),
+    ("רוני", "גרינפלד"),
+    ("גיא", "גרסנר"),
+    ("שגיא יעקב", "דוני"),
+    ("לביא", "דיינסטאג"),
+    ("אליאב", "דמתי"),
+    ("אמיר", "דעיבס"),
+    ("יהושע", "הול"),
+    ("מועתסם", "הייב"),
+    ("שיימאא", "הייב"),
+    ("מעוז חיים", "ולדמן"),
+    ("עומר", "זונשיין"),
+    ("כפיר", "זוסמן"),
+    ("ניסים בעז", "זכות"),
+    ("עידן", "זרה"),
+    ("גבריאל אהרון לאונרד", "זריבי"),
+    ("דניאל ישראל", "חגאי"),
+    ("מלאק", "חטיב"),
+    ("מחאסן", "חמוד"),
+    ("יונתן", "יובילר"),
+    ("מוריה תרון", "כגן"),
+    ("אביה", "כהן"),
+    ("אורי רבקה", "כהן"),
+    ("יאיר", "כהן"),
+    ("מעין", "כהן"),
+    ("ניל", "כהן"),
+    ("צוף", "כהן"),
+    ("רנן", "כהן"),
+    ("שיראל", "כהן"),
+    ("בועז", "כהן גינדי"),
+    ("מאי", "כספי"),
+    ("ניתאי", "כספי"),
+    ("יערי", "מאירוביץ"),
+    ("עודד", "מגנאגי"),
+    ("סאפי", "מוזלבט"),
+    ("יואב", "מוסקוביץ"),
+    ("רז", "מליח"),
+    ("דניאל יוסף", "ממן"),
+    ("אלירן", "מרדכי"),
+    ("הראל", "נח"),
+    ("שקד", "נמרוד"),
+    ("איתן", "סאידל"),
+    ("יאיר ישראל", "סאלדמן"),
+    ("נדב", "סודרי"),
+    ("מקסים", "סוריס"),
+    ("דניאל", "סטציוק"),
+    ("ייטב", "סימנהוז"),
+    ("דין", "סלמאן"),
+    ("נעים", "סמארה"),
+    ("שגיא יוסף", "עזוז"),
+    ("נריה", "עזני"),
+    ("מבשר ציון", "פלצקי"),
+    ("לירון", "פלשצ'וק"),
+    ("רון", "פרלמן"),
+    ("רועי", "צארום"),
+    ("יהונתן", "צפניה"),
+    ("באסל", "קאוואסמה"),
+    ("עדי", "קאסם"),
+    ("אביגיל", "קינן"),
+    ("דורון", "קליין"),
+    ("עומר", "קפרא"),
+    ("מאור", "קרון"),
+    ("דביר", "קרן צבי"),
+    ("דניאל", "ראובן"),
+    ("ארטיום", "רדומישלסקי"),
+    ("איתמר", "רוטשילד"),
+    ("רן", "רחמים"),
+    ("יונתן יוסף", "שובל"),
+    ("שלומי", "שוורץ"),
+    ("ינון", "שחר"),
+    ("עינב", "שלומוב"),
+    ("אוריה", "שלמה"),
+    ("אפרת", "שמיר"),
+    ("שלמה", "תוסייה-כהן"),
 ]
 
-FIRST_NAMES = [
-    "Noam", "Lior", "Yael", "Eitan", "Roni", "Amit", "Hila", "Gal", "Nadav", "Michal",
-    "Tal", "Yuval", "Adi", "Oren", "Neta", "Ido", "Rotem", "Shir", "Avi", "Dana",
-    "Ofir", "Liat", "Matan", "Inbar", "Tomer", "Keren", "Guy", "Moran", "Elad", "Sapir",
-    "Asaf", "Hadas", "Ran", "Efrat", "Yair", "Orly", "Itamar", "Talia", "Erez", "Galit",
-    "Nir", "Meital", "Ben", "Sivan", "Amir", "Dvir", "Hodaya", "Aviv", "Chen", "Maor",
-    "Rina", "Shai", "Liel", "Ohad", "Naama", "Yarden", "Eden", "Alon", "Ayelet", "Barak",
-    "Ahmad", "Lina", "Rami", "Nour", "Samer", "Rania", "Kareem", "Aya",
-    "Dmitri", "Anna", "Yevgeni", "Katya", "Avraham", "Tsega", "Yonas", "Rahel",
-]
-
-LAST_NAMES = [
-    "Cohen", "Levi", "Mizrahi", "Peretz", "Biton", "Dahan", "Avraham", "Friedman", "Azoulay",
-    "Malka", "Katz", "Yosef", "David", "Amar", "Ohayon", "Hadad", "Gabay", "Ben-David",
-    "Shapira", "Elkayam", "Vaknin", "Sasson", "Golan", "Shalom", "Ashkenazi", "Rosenberg",
-    "Klein", "Weiss", "Ben-Ami", "Tal", "Carmi", "Segal", "Halevi", "Nachum", "Barak",
-    "Mor", "Harari", "Zur", "Edri", "Revivo", "Levy", "Alon", "Ziv", "Shemesh", "Kaplan",
-    "Khoury", "Nasser", "Mansour", "Haj", "Ivanov", "Kogan", "Tesfaye", "Mekonen",
-]
+DEFAULT_CLASS_SIZE = len(CLASS_LIST)
+FIRST_STUDENT_NUMBER = 101
 
 
-def _email_for(name: str, student_id: str) -> str:
-    local = name.lower().replace(" ", ".").replace("-", "")
-    return f"{local}.{student_id}@{EMAIL_DOMAIN}"
-
-
-def generate_roster(count: int = DEFAULT_CLASS_SIZE, seed: int = 2026):
-    """
-    Returns a list of dicts ready for the Student constructor.
-    Every student starts as NOT checked in – attendance only comes from real check-ins.
-    """
-    rng = random.Random(seed)
+def generate_roster(count: int = DEFAULT_CLASS_SIZE):
+    """Returns a list of dicts ready for the Student constructor (everyone absent)."""
     roster = []
-    used_names = set()
-
-    for sid, name, present, c_time, method, dist in FIXED_STUDENTS[:count]:
-        used_names.add(name)
-        roster.append(dict(student_id=sid, name=name, email=_email_for(name, sid),
-                           is_present=present, check_in_time=c_time,
-                           check_in_method=method, distance_meters=dist))
-
-    next_number = 111
-    while len(roster) < count:
-        name = f"{rng.choice(FIRST_NAMES)} {rng.choice(LAST_NAMES)}"
-        if name in used_names:
-            continue
-        used_names.add(name)
-        sid = f"s{next_number}"
-        next_number += 1
+    for index, (first, last) in enumerate(CLASS_LIST[:count]):
+        student_id = f"s{FIRST_STUDENT_NUMBER + index}"
         roster.append(dict(
-            student_id=sid,
-            name=name,
-            email=_email_for(name, sid),
+            student_id=student_id,
+            name=f"{first} {last}",
+            email=f"{student_id}@{EMAIL_DOMAIN}",
             is_present=False,
             check_in_time=None,
             check_in_method="none",

@@ -65,10 +65,10 @@ class DataStore:
 
         # No pre-seeded check-in attempts: the audit log only shows real attempts.
 
-        # 1. Seed Students (120 Israeli names – see seed_students.py)
+        # 1. Seed Students (the real class list – see seed_students.py)
         for record in generate_roster(DEFAULT_CLASS_SIZE):
             self._students[record["student_id"]] = Student(
-                avatar=f"https://api.dicebear.com/7.x/notionists/svg?seed={record['name'].replace(' ', '')}",
+                avatar=f"https://api.dicebear.com/7.x/notionists/svg?seed={record['student_id']}",
                 **record
             )
 
@@ -77,7 +77,7 @@ class DataStore:
             Comment(
                 comment_id="c1",
                 content="Could you explain the difference between Strategy and State pattern with a quick code snippet?",
-                author_name="Tamar Peretz",
+                author_name="דניאל שלמה אהרן",
                 is_anonymous=False,
                 category="question",
                 timestamp="09:15:20",
@@ -97,7 +97,7 @@ class DataStore:
             Comment(
                 comment_id="c3",
                 content="For Exercise 2, can we use Python dataclasses or should we strictly write explicit getters and setters?",
-                author_name="Noa Cohen",
+                author_name="גיא אביב",
                 is_anonymous=False,
                 category="question",
                 timestamp="09:24:11",
@@ -107,7 +107,7 @@ class DataStore:
             Comment(
                 comment_id="c4",
                 content="Offline suggestion: Please upload the UML diagram template for the midterm project.",
-                author_name="Itai Mizrahi",
+                author_name="דולב אהרון",
                 is_anonymous=False,
                 category="offline",
                 timestamp="09:30:05",
@@ -169,9 +169,9 @@ class DataStore:
             ],
             transcript_snippets=[
                 TranscriptSnippet("09:12:40", "Dr. Avi Ben-David", "Notice how when the Subject updates its state, it notifies observers via a defined interface.", highlight=True),
-                TranscriptSnippet("09:14:15", "Tamar Peretz", "Does that mean the Subject has zero knowledge of the concrete observer implementation?", highlight=False),
+                TranscriptSnippet("09:14:15", "דניאל שלמה אהרן", "Does that mean the Subject has zero knowledge of the concrete observer implementation?", highlight=False),
                 TranscriptSnippet("09:14:28", "Dr. Avi Ben-David", "Precisely! That's the core essence of loose coupling in Object-Oriented Design.", highlight=True),
-                TranscriptSnippet("09:28:10", "Noa Cohen", "How does this prevent violation of the Open/Closed Principle?", highlight=False),
+                TranscriptSnippet("09:28:10", "גיא אביב", "How does this prevent violation of the Open/Closed Principle?", highlight=False),
                 TranscriptSnippet("09:28:35", "Dr. Avi Ben-David", "Because you can add new observer classes without altering a single line of the subject.", highlight=True)
             ],
             topics=["Observer Pattern", "Strategy Pattern", "SOLID Principles", "Loose Coupling", "Refactoring", "Clean Architecture"],
@@ -182,7 +182,7 @@ class DataStore:
         rev_alex = SubmissionReview(
             submission_id="sub-101",
             student_id="s101",
-            student_name="Noa Cohen",
+            student_name="גיא אביב",
             repo_name="alex-rivera/oop-classroom-tool",
             branch="main",
             commit_hash="7f3c91a",
@@ -216,7 +216,7 @@ class DataStore:
         rev_elena = SubmissionReview(
             submission_id="sub-102",
             student_id="s102",
-            student_name="Yonatan Levi",
+            student_name="ליאל אבידור",
             repo_name="elena-r/interactive-teaching-platform",
             branch="feature/vibe-prototype",
             commit_hash="4a8d11c",
@@ -250,7 +250,7 @@ class DataStore:
         rev_david = SubmissionReview(
             submission_id="sub-103",
             student_id="s103",
-            student_name="Itai Mizrahi",
+            student_name="דולב אהרון",
             repo_name="david-kim/cs-teach-dashboard",
             branch="master",
             commit_hash="2b9e602",

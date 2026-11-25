@@ -87,6 +87,7 @@ class AttendanceService:
             session.device_registrations = previous.device_registrations
             session.pending_approvals = previous.pending_approvals
             session.instructor_networks = previous.instructor_networks
+            session.headcounts = previous.headcounts
         self._datastore.set_session(session)
         return session.to_dict()
 
@@ -350,6 +351,63 @@ class AttendanceService:
             student_lat=0.0, student_lng=0.0, distance_meters=0.0, status="success", message=msg))
         return {"success": True, "student": student.to_dict(), "method": "qr_network", "message": msg}
 
+    # ---------- spreadsheet export (offline file + live link for Google Sheets / Excel) ----------
+    @_synchronized(mutates=False)
+    def export_csv(self) -> str:
+        """Attendance sheet as CSV. Same columns as the 'Export CSV' button, plus email and course."""
+        import csv
+        import io
+        session = self.get_session()
+        out = io.StringIO()
+        writer = csv.writer(out)
+        writer.writerow(["Student ID", "Name", "Email", "Status", "Distance (m)", "Check-In Time",
+                         "Method", "Course", "Classroom", "Date"])
+        today = datetime.now().strftime("%Y-%m-%d")
+        for s in sorted(self._datastore.get_all_students(), key=lambda st: st.name):
+            writer.writerow([
+                s.student_id, s.name, s.email, "Present" if s.is_present else "Absent",
+                "" if s.distance_meters is None else round(s.distance_meters, 1),
+                s.check_in_time or "", s.check_in_method, session.course_name, session.classroom_name, today,
+            ])
+        return out.getvalue()
+
+    # ---------- photo head count (evaluation only – never marks anyone present) ----------
+    @_synchronized()
+    def record_headcount(self, faces_detected: int, people_counted: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Saves how many people the instructor's class photo shows and compares it with the
+        number of check-ins. `faces_detected` = automatic count, `people_counted` = after the
+        instructor's manual correction (defaults to the automatic count).
+        """
+        try:
+            detected = int(faces_detected)
+            counted = int(people_counted) if people_counted is not None else detected
+        except (TypeError, ValueError):
+            return {"success": False, "message": "Counts must be whole numbers."}
+        if not (0 <= detected <= 2000 and 0 <= counted <= 2000):
+            return {"success": False, "message": "Counts must be between 0 and 2000."}
+
+        session = self.get_session()
+        checked_in = sum(1 for s in self._datastore.get_all_students() if s.is_present)
+        difference = counted - checked_in
+        if difference > 0:
+            verdict = f"{difference} people in the photo have not checked in."
+        elif difference < 0:
+            verdict = f"{-difference} more check-ins than people in the photo – possible check-ins from outside the room."
+        else:
+            verdict = "The photo matches the check-ins exactly."
+        record = {
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "faces_detected": detected,
+            "people_counted": counted,
+            "checked_in": checked_in,
+            "difference": difference,
+            "verdict": verdict,
+        }
+        session.headcounts.insert(0, record)
+        del session.headcounts[20:]
+        return {"success": True, "headcount": record}
+
     # ---------- fallback when the phone blocks location ----------
     @_synchronized()
     def request_manual_approval(self, student_id: str, qr_token: str,
@@ -436,6 +494,7 @@ class AttendanceService:
             "students": student_dicts,
             "session": session.to_dict(),
             "flagged_remote_attempts": flagged_remote_attempts,
+            "latest_headcount": session.headcounts[0] if session.headcounts else None,
             "pending_approvals": [
                 {k: v for k, v in r.items() if k != "device_ids"} for r in session.pending_approvals.values()
             ],

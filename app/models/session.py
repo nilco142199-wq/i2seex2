@@ -117,6 +117,8 @@ class ClassSession:
         self.pending_approvals: Dict[str, Dict[str, Any]] = {}
         # Network addresses of the instructor's device(s) – for the "same Wi-Fi" location check
         self.instructor_networks: List[str] = []
+        # Photo head counts taken by the instructor (people counted in a class photo)
+        self.headcounts: List[Dict[str, Any]] = []
 
     def set_classroom_location(self, lat: float, lng: float, name: Optional[str] = None) -> None:
         """Updates the instructor's classroom base coordinates."""
@@ -175,6 +177,7 @@ class ClassSession:
         self.device_bindings = {}
         self.device_registrations = {}
         self.pending_approvals = {}
+        self.headcounts = []
         self.is_active = True
         self.started_at = datetime.now().strftime("%H:%M:%S")
         self.ended_at = None

@@ -114,7 +114,7 @@ class ApiRouter:
             return 200, self._summary_service.get_summary()
 
         elif path == "/api/video/list":
-            return 200, {"videos": self._video_service.get_all_videos()}
+            return 200, {"videos": self._video_service.get_all_videos(), "llm": self._video_service.llm_status()}
 
         elif path == "/api/video/detail":
             vid_id = query.get("id", [None])[0]
@@ -192,6 +192,10 @@ class ApiRouter:
 
         elif path == "/api/attendance/approve":
             res = self._attendance_service.resolve_manual_approval(data.get("student_id"), bool(data.get("approve", True)))
+            return (200, res) if res.get("success") else (400, res)
+
+        elif path == "/api/attendance/headcount":
+            res = self._attendance_service.record_headcount(data.get("faces_detected"), data.get("people_counted"))
             return (200, res) if res.get("success") else (400, res)
 
         elif path == "/api/attendance/verify-network":

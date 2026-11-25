@@ -121,6 +121,14 @@ class ApiClient {
     });
   }
 
+  /** Saves a photo head count (automatic + corrected) – compared with the check-ins, marks nobody present. */
+  static async saveHeadcount(facesDetected, peopleCounted) {
+    return this.request('/api/attendance/headcount', {
+      method: 'POST',
+      body: JSON.stringify({ faces_detected: facesDetected, people_counted: peopleCounted })
+    });
+  }
+
   /** Location check without phone permission: current QR + same Wi-Fi as the instructor. */
   static async verifyByNetwork({ studentId, qrToken }) {
     return this.request('/api/attendance/verify-network', {
@@ -253,6 +261,34 @@ class ApiClient {
         title: title || '',
         topic: topic || ''
       })
+    });
+  }
+
+  /**
+   * Uploads the actual recording (raw bytes, not JSON) to /api/video/upload-file.
+   * Uses XMLHttpRequest because fetch() cannot report upload progress.
+   * @param {(percent:number)=>void} onProgress
+   */
+  static uploadVideoFile(file, { title = '', topic = '', language = 'auto' } = {}, onProgress = () => {}) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/video/upload-file');
+      xhr.setRequestHeader('Content-Type', file.type || 'video/mp4');
+      xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
+      xhr.setRequestHeader('X-Title', encodeURIComponent(title));
+      xhr.setRequestHeader('X-Topic', encodeURIComponent(topic));
+      xhr.setRequestHeader('X-Summary-Language', language);
+      xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100)); };
+      xhr.onload = () => {
+        let data = {};
+        try { data = JSON.parse(xhr.responseText || '{}'); } catch (e) { /* non-JSON error page */ }
+        if (xhr.status >= 200 && xhr.status < 300) return resolve(data);
+        if (xhr.status === 429) return reject(new Error(data.error || 'Upload limit reached. Try again later.'));
+        if (xhr.status === 413) return reject(new Error(data.error || 'The file is too large for this connection. Open the instructor page on http://localhost:8000 to upload large recordings.'));
+        reject(new Error(data.error || `Upload failed (HTTP ${xhr.status}).`));
+      };
+      xhr.onerror = () => reject(new Error('Network error during upload. If you use the public tunnel link, large files may be blocked – open the instructor page on http://localhost:8000 instead.'));
+      xhr.send(file);
     });
   }
 

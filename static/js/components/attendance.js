@@ -980,11 +980,19 @@ class AttendanceComponent {
                 }">
                   🙋 Approvals (${pendingApprovals.length})
                 </button>
+                <button data-tab="headcount" class="btn-roster-tab px-3 py-1.5 rounded-xl text-xs font-bold transition ${
+                  this.activeRosterTab === 'headcount' ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }">
+                  📸 Photo count
+                </button>
               </div>
 
               <div class="flex items-center gap-2 flex-wrap">
                 <input id="roster-search" type="search" placeholder="🔍 Search name or ID…" value="${this.rosterFilter || ''}"
                   class="px-3 py-1.5 border border-slate-200 rounded-xl text-xs w-44 focus:ring-2 focus:ring-indigo-500">
+                <button id="btn-live-sheet" class="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-800 rounded-xl text-xs font-semibold transition inline-flex items-center gap-1">
+                  <span>🔗</span> Live Sheet
+                </button>
                 <button id="btn-export-csv" class="px-3 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-xl text-xs font-medium transition inline-flex items-center gap-1">
                   <span>📥</span> Export CSV
                 </button>
@@ -1080,6 +1088,11 @@ class AttendanceComponent {
               </div>
             ` : ''}
 
+            ${this.showLiveSheet ? this.renderLiveSheetPanel() : ''}
+
+            <!-- Tab Content: Photo head count -->
+            ${this.activeRosterTab === 'headcount' ? this.renderHeadcountTab() : ''}
+
             <!-- Tab Content: Manual approvals (phone location blocked) -->
             ${this.activeRosterTab === 'approvals' ? `
               <div class="p-4 space-y-3">
@@ -1133,6 +1146,123 @@ class AttendanceComponent {
         </div>
       </div>
     `;
+  }
+
+  /** Online spreadsheet: a live CSV link that Google Sheets / Excel keep in sync. */
+  renderLiveSheetPanel() {
+    const url = `${QREngine.publicOrigin()}/api/attendance/export.csv`;
+    const formula = `=IMPORTDATA("${url}")`;
+    const isPublic = window.SERVER_MODE === 'tunnel';
+    return `
+      <div class="mx-4 mb-2 p-4 rounded-2xl bg-emerald-50 border border-emerald-200 text-xs space-y-2 text-emerald-900">
+        <div class="font-bold">🔗 Live attendance spreadsheet</div>
+        <ol class="list-decimal ms-4 space-y-1">
+          <li>Open a new Google Sheet (<a href="https://sheets.new" target="_blank" rel="noopener" class="underline">sheets.new</a>).</li>
+          <li>Paste this into cell <strong>A1</strong> — the sheet fills with the attendance and keeps updating:</li>
+        </ol>
+        <div class="flex gap-2">
+          <code id="live-sheet-formula" class="flex-1 p-2 rounded-lg bg-white border border-emerald-200 font-mono text-[11px] break-all select-all">${formula}</code>
+          <button id="btn-copy-formula" class="px-3 rounded-lg bg-emerald-600 text-white font-bold">Copy</button>
+        </div>
+        <div>Excel: <em>Data → From Web</em> → paste <span class="font-mono break-all">${url}</span>. Or <a href="${url}" target="_blank" rel="noopener" class="underline font-semibold">open the CSV</a>.</div>
+        ${isPublic ? '' : `<div class="p-2 rounded-lg bg-amber-100 text-amber-900">⚠️ Google Sheets can only read a <strong>public</strong> link. Start the server with <code>python3 server.py --tunnel</code> for the live sheet. (The CSV file download works anyway.)</div>`}
+        <div class="text-emerald-700">Google refreshes IMPORTDATA about once an hour; to refresh now, delete and re-paste the formula.</div>
+      </div>`;
+  }
+
+  // ==========================================
+  // PHOTO HEAD COUNT (instructor)
+  // ==========================================
+  renderHeadcountTab() {
+    const hc = this.headcount || {};
+    const latest = this.data.latest_headcount;
+    const checkedIn = this.data.present_count;
+    const counted = hc.counted;
+    const diff = typeof counted === 'number' ? counted - checkedIn : null;
+    return `
+      <div class="p-4 space-y-4 text-xs">
+        <div class="text-slate-500 leading-relaxed">
+          Take a photo of the class (or upload one). Faces are counted automatically <strong>in this browser</strong> (the photo is not uploaded)
+          and compared with the <strong>${checkedIn}</strong> check-ins. The count never marks anyone present.
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button id="btn-headcount-photo" class="px-4 py-2.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl font-bold">📷 Take / upload class photo</button>
+          <input id="input-headcount-photo" type="file" accept="image/*" capture="environment" class="hidden">
+        </div>
+        ${hc.status ? `<div class="p-3 rounded-xl border ${hc.error ? 'bg-rose-50 border-rose-200 text-rose-900' : 'bg-indigo-50 border-indigo-200 text-indigo-900'}">${hc.status}</div>` : ''}
+        ${typeof counted === 'number' ? `
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div class="p-4 rounded-2xl bg-slate-50 border border-slate-200 text-center">
+              <div class="text-slate-500">People in the photo</div>
+              <div class="flex items-center justify-center gap-3 mt-1">
+                <button id="btn-headcount-minus" class="w-8 h-8 rounded-full bg-white border border-slate-300 font-bold">−</button>
+                <span id="headcount-value" class="text-3xl font-extrabold text-slate-900">${counted}</span>
+                <button id="btn-headcount-plus" class="w-8 h-8 rounded-full bg-white border border-slate-300 font-bold">+</button>
+              </div>
+              <div class="text-[10px] text-slate-400 mt-1">detected automatically: ${hc.detected} · fix with − / +</div>
+            </div>
+            <div class="p-4 rounded-2xl bg-slate-50 border border-slate-200 text-center">
+              <div class="text-slate-500">Checked in</div>
+              <div class="text-3xl font-extrabold text-indigo-700 mt-1">${checkedIn}</div>
+            </div>
+            <div class="p-4 rounded-2xl border text-center ${diff === 0 ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : 'bg-amber-50 border-amber-200 text-amber-900'}">
+              <div>Difference</div>
+              <div class="text-3xl font-extrabold mt-1">${diff > 0 ? '+' : ''}${diff}</div>
+              <div class="text-[11px] mt-1">${diff === 0 ? 'Photo matches the check-ins' : diff > 0 ? `${diff} in the room did not check in` : `${-diff} more check-ins than people – possible remote check-ins`}</div>
+            </div>
+          </div>
+          <button id="btn-headcount-save" class="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold">💾 Save this count to the session</button>
+          <canvas id="headcount-canvas" class="w-full rounded-xl border border-slate-200"></canvas>
+        ` : ''}
+        ${latest ? `
+          <div class="p-3 rounded-xl bg-white border border-slate-200 text-slate-600">
+            <strong>Last saved count (${latest.time}):</strong> ${latest.people_counted} people in the photo
+            (auto ${latest.faces_detected}) vs ${latest.checked_in} check-ins — ${latest.verdict}
+          </div>` : ''}
+      </div>`;
+  }
+
+  async handleHeadcountPhoto(file) {
+    if (!file) return;
+    this.headcount = { status: '🖼️ Opening the photo…' };
+    this.render();
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    try {
+      await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = () => reject(new Error('Could not open that image.')); img.src = url; });
+      const setStatus = (text) => {
+        this.headcount = { ...this.headcount, status: '⏳ ' + text };
+        const box = this.container.querySelector('#btn-headcount-photo');
+        if (box) this.render();
+      };
+      const result = await HeadCounter.countFaces(img, { onStatus: setStatus });
+      this.headcountImage = img;
+      this.headcountBoxes = result.boxes;
+      this.headcount = { detected: result.count, counted: result.count,
+        status: `✅ Found <strong>${result.count}</strong> faces. Check the green boxes and fix the number with − / + if needed, then save.` };
+    } catch (err) {
+      this.headcount = { error: true, status: '⚠️ ' + err.message };
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+    this.render();
+  }
+
+  drawHeadcountCanvas() {
+    const canvas = this.container ? this.container.querySelector('#headcount-canvas') : null;
+    if (canvas && this.headcountImage) HeadCounter.drawResult(canvas, this.headcountImage, this.headcountBoxes || []);
+  }
+
+  async handleSaveHeadcount() {
+    const hc = this.headcount || {};
+    try {
+      const res = await ApiClient.saveHeadcount(hc.detected, hc.counted);
+      this.headcount = { ...hc, status: '💾 Saved: ' + res.headcount.verdict };
+      await this.fetchData({ full: true });
+    } catch (err) {
+      this.headcount = { ...hc, error: true, status: '⚠️ ' + err.message };
+    }
+    this.render();
   }
 
   /** Fallback when the phone refuses location: request instructor approval. */
@@ -1546,6 +1676,38 @@ class AttendanceComponent {
       btnRegister.addEventListener('click', () => this.handleRegisterStudent());
     }
 
+    // Live spreadsheet panel
+    const btnLiveSheet = this.container.querySelector('#btn-live-sheet');
+    if (btnLiveSheet) btnLiveSheet.addEventListener('click', () => { this.showLiveSheet = !this.showLiveSheet; this.render(); });
+    const btnCopyFormula = this.container.querySelector('#btn-copy-formula');
+    if (btnCopyFormula) {
+      btnCopyFormula.addEventListener('click', async () => {
+        const text = this.container.querySelector('#live-sheet-formula').textContent;
+        try { await navigator.clipboard.writeText(text); btnCopyFormula.textContent = 'Copied ✓'; }
+        catch (e) { window.prompt('Copy this formula:', text); }
+      });
+    }
+
+    // Photo head count
+    const btnHcPhoto = this.container.querySelector('#btn-headcount-photo');
+    const inputHcPhoto = this.container.querySelector('#input-headcount-photo');
+    if (btnHcPhoto && inputHcPhoto) {
+      btnHcPhoto.addEventListener('click', () => inputHcPhoto.click());
+      inputHcPhoto.addEventListener('change', (e) => this.handleHeadcountPhoto(e.target.files[0]));
+    }
+    const adjust = (delta) => {
+      if (!this.headcount || typeof this.headcount.counted !== 'number') return;
+      this.headcount = { ...this.headcount, counted: Math.max(0, this.headcount.counted + delta) };
+      this.render();
+    };
+    const btnMinus = this.container.querySelector('#btn-headcount-minus');
+    if (btnMinus) btnMinus.addEventListener('click', () => adjust(-1));
+    const btnPlus = this.container.querySelector('#btn-headcount-plus');
+    if (btnPlus) btnPlus.addEventListener('click', () => adjust(+1));
+    const btnHcSave = this.container.querySelector('#btn-headcount-save');
+    if (btnHcSave) btnHcSave.addEventListener('click', () => this.handleSaveHeadcount());
+    this.drawHeadcountCanvas();
+
     const btnNetwork = this.container.querySelector('#btn-verify-network');
     if (btnNetwork) btnNetwork.addEventListener('click', () => this.handleVerifyByNetwork());
 
@@ -1634,9 +1796,10 @@ class AttendanceComponent {
       btnExport.addEventListener('click', () => {
         let csv = "Student ID,Name,Status,Distance (m),Check-In Time,Method\n";
         this.data.students.forEach(s => {
-          csv += `"${s.student_id}","${s.name}","${s.is_present ? 'Present' : 'Absent'}","${s.distance_meters !== null ? s.distance_meters : ''}","${s.check_in_time || ''}","${s.check_in_method}"\n`;
+          csv += `"${s.student_id}","${String(s.name).replace(/"/g, '""')}","${s.is_present ? 'Present' : 'Absent'}","${s.distance_meters !== null ? s.distance_meters : ''}","${s.check_in_time || ''}","${s.check_in_method}"\n`;
         });
-        const blob = new Blob([csv], { type: 'text/csv' });
+        // \uFEFF (BOM) makes Excel read the file as UTF-8, so Hebrew names display correctly
+        const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;

@@ -248,12 +248,13 @@ class TestQrScanFixes(unittest.TestCase):
 class TestScalability(unittest.TestCase):
     """120-student roster, concurrent check-ins, cheap polling, self-registration."""
 
-    def test_roster_has_120_israeli_students(self):
-        students = DataStore().get_all_students()
-        self.assertGreaterEqual(len(students), 120)
+    def test_roster_is_the_class_list(self):
+        from app.repositories.seed_students import CLASS_LIST
+        students = [s for s in DataStore().get_all_students() if s.student_id.startswith("s")]
+        self.assertGreaterEqual(len(students), len(CLASS_LIST))    # 104 students from the lecturer's list
         names = {s.student_id: s.name for s in students}
-        self.assertEqual(names["s101"], "Noa Cohen")
-        self.assertEqual(names["s103"], "Itai Mizrahi")
+        self.assertEqual(names["s101"], "גיא אביב")
+        self.assertEqual(names["s103"], "דולב אהרון")
         self.assertEqual(len(set(names.values())), len(names))  # no duplicate names
 
     def test_concurrent_checkins_of_whole_class(self):
@@ -309,15 +310,15 @@ class TestScalability(unittest.TestCase):
         router = ApiRouter()
         code, body = router.handle("GET", "/api/attendance/me?student_id=s101", b"")
         self.assertEqual(code, 200)
-        self.assertEqual(body["student"]["name"], "Noa Cohen")
+        self.assertEqual(body["student"]["name"], "גיא אביב")
 
     def test_self_registration(self):
         router = ApiRouter()
         code, body = router.handle("POST", "/api/students/register",
-                                   json.dumps({"student_id": "318234567", "name": "  Moshe   Levi "}).encode())
+                                   json.dumps({"student_id": "318234567", "name": "  משה   לוי "}, ensure_ascii=False).encode())
         self.assertEqual(code, 200)
         self.assertTrue(body["created"])
-        self.assertEqual(body["student"]["name"], "Moshe Levi")
+        self.assertEqual(body["student"]["name"], "משה לוי")  # Hebrew name, extra spaces removed
         code, body = router.handle("POST", "/api/students/register",
                                    json.dumps({"student_id": "318234567", "name": "Other"}).encode())
         self.assertFalse(body["created"])  # existing ID is reused, not duplicated
@@ -363,7 +364,7 @@ class TestOnePhonePerStudent(unittest.TestCase):
         self.assertTrue(again["success"])
 
     def test_one_self_registration_per_phone(self):
-        ok = self.service.register_student("318111222", "Moshe Levi", device_ids=["phone-reg-1"])
+        ok = self.service.register_student("318111222", "משה לוי", device_ids=["phone-reg-1"])
         bad = self.service.register_student("318333444", "Fake Friend", device_ids=["phone-reg-1"])
         self.assertTrue(ok["success"])
         self.assertFalse(bad["success"])
@@ -400,6 +401,110 @@ class TestWifiFallback(unittest.TestCase):
         self.assertTrue(same["success"])
         self.assertEqual(same["student"]["check_in_method"], "qr_network")
         self.assertTrue(AttendanceService.same_network("192.168.1.10", "192.168.1.77"))   # same home/LAN Wi-Fi
+
+
+class TestPhotoHeadcount(unittest.TestCase):
+    """Class photo head count is compared with check-ins and never marks anyone present."""
+
+    def test_headcount_compares_without_marking_present(self):
+        service = AttendanceService()
+        service.start_session()
+        token = service.get_current_qr()["token"]
+        service.verify_qr_gps_checkin("s101", token, 32.104900, 35.209444)
+        service.verify_qr_gps_checkin("s102", token, 32.104900, 35.209444)
+
+        res = service.record_headcount(faces_detected=4, people_counted=5)
+        self.assertTrue(res["success"])
+        self.assertEqual(res["headcount"]["checked_in"], 2)
+        self.assertEqual(res["headcount"]["difference"], 3)
+        summary = service.get_roster_summary()
+        self.assertEqual(summary["present_count"], 2)                 # nobody added by the photo
+        self.assertEqual(summary["latest_headcount"]["people_counted"], 5)
+        self.assertFalse(service.record_headcount("abc")["success"])  # invalid input rejected
+
+
+class TestSpreadsheetExport(unittest.TestCase):
+    """The live spreadsheet (CSV) lists every student with the right status."""
+
+    def test_csv_has_all_students_and_status(self):
+        import csv, io
+        service = AttendanceService()
+        service.start_session()
+        token = service.get_current_qr()["token"]
+        service.verify_qr_gps_checkin("s101", token, 32.104900, 35.209444)
+        rows = list(csv.reader(io.StringIO(service.export_csv())))
+        self.assertEqual(rows[0][:4], ["Student ID", "Name", "Email", "Status"])
+        self.assertEqual(len(rows) - 1, len(DataStore().get_all_students()))
+        status = {r[0]: r[3] for r in rows[1:]}
+        self.assertEqual(status["s101"], "Present")
+        self.assertEqual(status["s102"], "Absent")
+
+
+class TestGeminiVideoPipeline(unittest.TestCase):
+    """Real-LLM video summary path, run against a local stand-in for the Gemini API (no internet needed)."""
+
+    def test_recording_is_uploaded_processed_and_summarised(self):
+        import os, tempfile, time
+        from tests.fake_gemini import FakeGemini, HEBREW_SUMMARY
+        from app.services.gemini_client import GeminiClient
+        from app.services.video_summary_service import VideoSummaryService
+
+        fake = FakeGemini(processing_polls=2).start()
+        try:
+            client = GeminiClient(api_key="test-key", base_url=fake.base_url)
+            client.poll_seconds = 0.05
+            service = VideoSummaryService(gemini=client)
+            fd, path = tempfile.mkstemp(suffix=".mp4")
+            os.write(fd, b"\x00\x00\x00\x18ftypmp42" + b"x" * 5000)
+            os.close(fd)
+
+            job = service.start_video_job(path, "lecture.mp4", 0.01, title="", language="he")
+            self.assertEqual(job["status"], "processing")
+            self.assertFalse(job["simulated"])
+            for _ in range(100):
+                video = service.get_video_by_id(job["video_id"])
+                if video["status"] != "processing":
+                    break
+                time.sleep(0.05)
+
+            self.assertEqual(video["status"], "completed", video.get("error"))
+            self.assertEqual(video["executive_summary"], HEBREW_SUMMARY["executive_summary"])
+            self.assertEqual(len(video["chapters"]), 2)
+            self.assertIn("gemini-3.7-flash", video["ai_model"])        # 3.8 "retired" → automatic fallback
+            self.assertEqual(fake.uploaded_bytes, 5012)                  # the actual file bytes reached the API
+            self.assertEqual(fake.api_keys, {"test-key"})
+            self.assertFalse(os.path.exists(path))                       # temp file cleaned up
+            qa = service.ask_video_qa(job["video_id"], "מתי מוסברת התבנית?")
+            self.assertFalse(qa["simulated"])
+            self.assertEqual(qa["timestamp"], "12:30")
+        finally:
+            fake.stop()
+
+    def test_without_api_key_result_is_labelled_simulated(self):
+        import os, tempfile
+        from app.services.gemini_client import GeminiClient
+        from app.services.video_summary_service import VideoSummaryService
+        service = VideoSummaryService(gemini=GeminiClient(api_key=""))
+        fd, path = tempfile.mkstemp(suffix=".mp4"); os.close(fd)
+        video = service.start_video_job(path, "lecture.mp4", 1.0)
+        self.assertTrue(video["simulated"])
+        self.assertIn("DEMO MODE", video["executive_summary"])
+        self.assertFalse(service.llm_status()["enabled"])
+
+    def test_busy_model_is_retried_then_next_model_used(self):
+        """503 'high demand' from one model → retried, then the next model answers."""
+        from tests.fake_gemini import FakeGemini
+        from app.services.gemini_client import GeminiClient
+        fake = FakeGemini(processing_polls=0, retired_models=(), busy_models=("gemini-3.8-flash",)).start()
+        try:
+            client = GeminiClient(api_key="test-key", base_url=fake.base_url)
+            client.retry_delays = (0.01,)
+            text = client.generate([{"file_data": {"file_uri": "https://fake/files/abc123", "mime_type": "video/mp4"}},
+                                    {"text": "Question: when is the homework due?"}])
+            self.assertTrue(text)
+            self.assertEqual(client.last_model_used, "gemini-3.7-flash")
+        finally:
+            fake.stop()
 
 
 if __name__ == "__main__":

@@ -4,7 +4,54 @@
 
 ---
 
+## 🎯 Problem Statement & Scope
+
+### The problem
+Teaching tools used in class today are scattered and not built for a live lecture: attendance is read out or signed on paper (slow) or done with a code that can be sent over WhatsApp (easy to fake); polls and questions need a separate site; recorded lectures and homework get little feedback. The course asks for **better, simpler and LLM-ready** tools that work **in this class**, from the students' own phones.
+
+### Goal
+One web application (no installation for students – KISS) that a lecturer starts with one command and uses during the lecture.
+
+### Scope – features
+| # | Feature (from the assignment) | In this project |
+|---|---|---|
+| 1 ⭐ | **Attendance** – automatic / as simple as possible; lecturer evaluates it (e.g. class photo + automatic count); online/offline spreadsheet | Rotating QR + 500 m GPS geofence (Ariel University) · one phone per student · Wi-Fi & instructor-approval fallbacks · live roster · **📸 photo head count** · **📥 CSV** + **🔗 live Google Sheets link** |
+| 2 | Comments & suggestions, real time / offline | Live feed, categories, anonymous, upvote, resolve |
+| 3 | On-the-spot (KISS) polls | Create in seconds, one vote per student, live results |
+| 4 | ML summary of a class video (Zoom / Meet / Classroom) | **Real LLM (Google Gemini)** watches the recording → summary, clickable chapters, takeaways, action items, Q&A (demo mode without an API key) |
+| 5 | Deep LLM homework review incl. comparison to other students | Scores, SOLID, patterns, code smells, side-by-side *(model output simulated)* |
+
+### Out of scope
+Integration with Moodle / Zoom / Google Classroom · personal information (no ID numbers; the roster is the lecturer's class list – names only, in Hebrew; class photos are analysed in the browser and never uploaded) · user accounts / SSO · persistent database · paid LLM subscriptions (interfaces are ready).
+
+### Requirements from the assignment and how they are met
+| Requirement | How |
+|---|---|
+| Works in this class, real demo | `python3 server.py --tunnel` → public HTTPS link; tested with real phones; 150–300 simultaneous students load-tested |
+| KISS smartphone web app | Students scan the projected QR → 3 steps on one screen; nothing to install |
+
+---
+
+## 📚 Design Documents
+
+| # | Document | Assignment To-Do |
+|---|---|---|
+| 1 | [Technical tools report](docs/01_tools_report.md) | 3 |
+| 2 | [Statement of Work (SoW)](docs/02_statement_of_work.md) | 4 |
+| 3 | [Software Requirements Specification (SRS)](docs/03_SRS.md) | 5 |
+| 4 | [Use cases & client stories](docs/04_use_cases.md) | 6 |
+| 5 | [Main software components](docs/05_components.md) | 7 |
+| 6 | [Class diagrams](docs/06_class_diagrams.md) | 8 |
+| 7 | [Sequence diagrams](docs/07_sequence_diagrams.md) | 8 |
+| 8 | [Testing strategy](docs/08_testing_strategy.md) | 9 |
+| 9 | [Results & conclusion](docs/09_results_and_conclusion.md) | 12 |
+
+Diagrams are written in Mermaid and render directly on GitHub.
+
+---
+
 ## 📋 Table of Contents
+0. [Problem Statement & Scope](#-problem-statement--scope) · [Design Documents](#-design-documents)
 1. [Prerequisites & Installation](#-prerequisites--installation)
 2. [How to Run](#-how-to-run)
 3. [Testing Guide — Instructor Flow](#-testing-guide--instructor-flow)
@@ -31,7 +78,7 @@
 | **A modern browser** (Chrome, Edge, Safari, Firefox) | Camera + GPS APIs | — |
 | **cloudflared** *(recommended for phone testing)* | Public HTTPS link for `--tunnel` | `brew install cloudflared` → `cloudflared --version` |
 | **OpenSSL** *(only for `--https`)* | Generates the self-signed certificate automatically | `openssl version` (pre-installed on macOS & most Linux) |
-| Internet *(optional)* | Tailwind CSS + fonts load from a CDN for styling. QR generation/scanning works offline (bundled in `static/js/vendor/`). | — |
+| Internet *(optional)* | Only for the Rubik font, the head-count model and Gemini video summaries. Styling (`static/css/tailwind.css`) and QR generation/scanning (`static/js/vendor/`) are bundled and work offline. | — |
 
 **Installation:**
 
@@ -134,12 +181,14 @@ Stop the server with **Ctrl + C**. If you see *"Address already in use"*, anothe
    - a **QR code** that rotates every 20 s (countdown badge `🔄 Rotates in: Xs`),
    - a large **6-character code** (e.g. `K7Q2MX`) that students can type if their camera fails.
    - Use **Dynamic (20s)** / **Static** to change rotation mode.
-6. **Everyone starts as "Not Checked In"** (0 / 120) — the numbers only change from real check-ins (or your manual *Mark Present*).
+6. **Everyone starts as "Not Checked In"** (0 / 104) — the numbers only change from real check-ins (or your manual *Mark Present*).
 7. **Watch check-ins live:** the roster refreshes automatically every 5 seconds. With 100+ students use the **🔍 Search name or ID** box above the list; the tables scroll with a fixed header.
    - **✓ Verified Present** — name, time, distance from class, method.
    - **⏳ Not Checked In** — includes a *Mark Present* manual override.
    - **🚨 Flagged Breaches** — attempts rejected for being outside 500 m.
-   - **📥 Export CSV** downloads the list.
+   - **📥 Export CSV** downloads the list (offline spreadsheet).
+   - **🔗 Live Sheet** shows a formula like `=IMPORTDATA("https://….trycloudflare.com/api/attendance/export.csv")`. Paste it into cell A1 of a new Google Sheet (or use Excel *Data → From Web*) to get an **online spreadsheet** that keeps updating (Google refreshes about every hour; re-enter the formula to refresh now). Needs the public `--tunnel` link.
+   - **📸 Photo count** — take or upload a photo of the class. Faces are counted **in the browser** (the photo is not uploaded), drawn as numbered boxes, and compared with the number of check-ins (e.g. *47 in the photo vs 45 checked in → 2 did not check in*). Fix the count with − / + and **💾 Save**. The photo **never marks anyone present**. Needs internet the first time (the face-detection model is downloaded from jsDelivr).
 8. **🙋 Approvals** — students whose phone refuses to share location (but who scanned the **current** QR) appear here. Approve only students you can see in the room.
 9. **🚨 Flagged Breaches** also lists **SAME PHONE** attempts — a phone that already checked in one student trying to check in another.
 10. Click **■ End Session** when class is over — from then on, students get *"No active session"*.
@@ -152,7 +201,7 @@ Stop the server with **Ctrl + C**. If you see *"Address already in use"*, anothe
 
 1. Open Student Mode in **another tab/window** (<http://localhost:8000/?role=student>) or on a phone (see next section).
    Each tab remembers its own role, so the instructor tab and student tab don't interfere.
-2. **Pick your name** in the *"I am"* dropdown at the top of the card (120 demo students with Israeli names). Type part of your name or ID in **🔍 Find your name** to jump to it.
+2. **Pick your name** in the *"I am"* dropdown at the top of the card (the 104 students of the class, in Hebrew). Type part of your name or ID in **🔍 Find your name** to jump to it.
    **Not on the list?** (e.g. real classmates trying it during the presentation) open **"Not on the list? Add yourself"**, enter your student ID and full name, tap **Add** — you're selected automatically.
 3. **Step 1 – Check your location** (separate from the QR – the camera is never open at the same time): tap **📍 Check my location** → **Allow** → the card shows your distance from Ariel University and ✓/✕ for the 500 m radius.
    **Phone blocks location?** Tap **📶 Check my location by Wi-Fi** (no permission needed, phone on the same Wi-Fi as the instructor) or **🙋 Ask the instructor to approve me**.
@@ -228,7 +277,7 @@ Same-Wi-Fi alternative without installing anything: see [Option C](#option-c--ph
 | Location blocked right after scanning the QR with the phone camera | On Android, Google Lens often opens the link **inside the Google app**, which blocks location. Tap ⋮ → **Open in Chrome** (the app detects this and tells you). Using the **📷 Start Camera** button inside the site avoids this. |
 | Desktop GPS is inaccurate | Laptops locate via Wi-Fi and may be off by 100 m+. Test check-in from a phone. |
 | iPhone: "Location access is blocked" even after changing settings | 1) Use the **`--tunnel`** link — Safari blocks location on the self-signed `--https` link. 2) **Settings → Apps → Safari → Location** must be *Ask* or *Allow* (not *Deny*). 3) **Settings → Privacy & Security → Location Services → Safari Websites → While Using the App**. 4) In Safari **ᴀA → Website Settings → Location → Ask**. 5) Close the tab, reopen the link, tap **📍 Check my location** → **Allow**. Still blocked? Use **🙋 Ask the instructor to approve me** and send the *Technical details* text to the developer. |
-| Page looks unstyled | Tailwind CSS loads from the internet; functionality still works offline. |
+| Page looks unstyled | Hard-refresh (Ctrl/Cmd+Shift+R). Styling is local (`static/css/tailwind.css`); if you added new Tailwind classes, rebuild it: `node tools/build_css.mjs . static/css/tailwind.css`. |
 
 ---
 
@@ -240,12 +289,12 @@ python3 -m unittest discover tests -v
 
 Expected ending:
 ```
-Ran 28 tests in 0.0XXs
+Ran 33 tests in 0.0XXs
 
 OK
 ```
 
-The tests cover the domain models, QR rotation and the grace window, deep-link URLs and short codes, session start/end, **one location test** (`TestLocation.test_distance_from_required_location`: ~33 m from Ariel University is accepted, ~1 km is rejected), one-phone-per-student and the instructor-approval fallback, the 120-student roster, concurrent check-ins of the whole class, versioned polling, self-registration, and the REST router.
+The tests cover the domain models, QR rotation and the grace window, deep-link URLs and short codes, session start/end, **one location test** (`TestLocation.test_distance_from_required_location`: ~33 m from Ariel University is accepted, ~1 km is rejected), one-phone-per-student and the instructor-approval fallback, the 104-student class roster, concurrent check-ins of the whole class, versioned polling, self-registration, the REST router, and the **Gemini video pipeline** (against the local fake Gemini server, so no key or internet is needed).
 
 ---
 
@@ -272,7 +321,7 @@ Failures: 0
 
 | Concern | What the system does |
 |---|---|
-| **Everyone checks in at the same second** | Every attendance write runs under one lock (`DataStore.lock`, `@_synchronized` in `AttendanceService`), so concurrent check-ins can't corrupt the roster. Tested with 120 threads in the unit tests and 300 HTTP clients in the load test. |
+| **Everyone checks in at the same second** | Every attendance write runs under one lock (`DataStore.lock`, `@_synchronized` in `AttendanceService`), so concurrent check-ins can't corrupt the roster. Tested with the whole class (104 threads) in the unit tests and 300 HTTP clients in the load test. |
 | **Connection bursts** | The server's listen backlog is raised from Python's default 5 to 512 (`request_queue_size`), and each request runs in its own thread. |
 | **Polling traffic** | Student phones poll only their **own** status (`/api/attendance/me`, ~0.5 KB) every 10 s, and only for the open tab — not the whole class. The instructor polls every 5 s with `?since=<version>`; if nothing changed the server answers `{"unchanged": true}` (41 bytes) and the screen isn't redrawn. |
 | **Payload size** | The roster is sent once (no duplicated present/absent copies). Large JS libraries are cached by phones for a day. |
@@ -290,7 +339,7 @@ Limits to know: data is kept **in memory** (restarting the server resets it), an
 
 The CS302 Interactive Classroom Suite is an end-to-end web application prototype built for university instruction. It addresses two critical operational challenges:
 1. **Attendance Fraud & Friction**: Eliminates buddy-signing and remote screenshot-sharing by enforcing **Dual-Factor Geofenced Verification** (Dynamic rotating QR code + real-time GPS <= 500m).
-2. **Lecture Review & Knowledge Extraction**: Enables instructors to upload video recordings of classes and leverages a multi-modal AI pipeline (Whisper ASR + Gemini LLM) to synthesize executive summaries, interactive timeline chapters, and actionable homework tasks.
+2. **Lecture Review & Knowledge Extraction**: Enables instructors to upload video recordings of classes; Google Gemini watches and listens to the recording and returns executive summaries, interactive timeline chapters, and actionable homework tasks.
 
 ```
 +───────────────────────────────────────────────────────────────────────────────+
@@ -374,18 +423,62 @@ def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> fl
 
 ## 🎥 Class Video Upload & AI Summarization
 
-The system features an automated **Class Video Upload & Multi-Modal AI Summarization Suite** ([`video_summary_service.py`](app/services/video_summary_service.py)):
+A recorded lecture (`.mp4`, `.webm`, `.mov`, also audio files) is **really sent to an LLM – Google Gemini** – which watches *and* listens to the whole recording and returns the summary. Code: [`gemini_client.py`](app/services/gemini_client.py), [`video_summary_service.py`](app/services/video_summary_service.py).
 
-### 1. Multi-Modal Ingestion Pipeline
-1. **Video Ingestion**: Instructor uploads a class recording (`.mp4`, `.webm`, `.mov`, `.mkv`) via drag-and-drop or file picker.
-2. **Audio Extraction & Whisper ASR**: Automatically transcribes speech into a timestamped, speaker-labeled transcript.
-3. **Keyframe & Slide OCR**: Multi-modal vision analysis detects code snippets and presentation slides.
-4. **Gemini LLM Chapter Indexing & Synthesis**:
-   - **Executive Summary**: Comprehensive paragraph summarizing the core architectural discussions.
-   - **Timeline Chapters**: Discrete clickable segments (*e.g., `00:00 - Introduction`, `14:20 - Observer Pattern UML`, `31:45 - Live Refactoring Demo`, `52:10 - Thread Safety & Memory Leaks`*).
-   - **Key Takeaways**: Bulleted conceptual learnings.
-   - **Action Items**: Concrete homework tasks with assignees and due dates.
-5. **Interactive Video Q&A Assistant**: Students or instructors can type questions into the **"Ask AI About This Video"** box (*e.g., "When is the homework deadline?"*), and the AI returns an immediate response referencing the exact timestamp in the recording!
+### Turn it on (free, once)
+1. Get a free API key at **https://aistudio.google.com/apikey** (Google account → *Create API key*).
+2. Easiest: create a file named **`.env`** in the project folder with one line `GEMINI_API_KEY=paste-your-key` – `server.py` reads it automatically and `.env` is git-ignored, so the key never reaches GitHub. Or set it in the terminal each time:
+   ```bash
+   # macOS / Linux
+   export GEMINI_API_KEY="paste-your-key"
+   python3 server.py --tunnel
+   ```
+   ```powershell
+   # Windows PowerShell
+   $env:GEMINI_API_KEY="paste-your-key"
+   python server.py --tunnel
+   ```
+3. The terminal prints `🤖 Video summaries: REAL – Google Gemini`. Without a key it prints `⚪ Video summaries: DEMO MODE`, and the page shows a grey *Demo mode* pill – demo results are clearly labelled **DEMO** and are never presented as a real summary.
+
+Optional: `GEMINI_MODEL=...` picks a model (default: the newest Flash model; if Google has retired it the client automatically falls back to the next one).
+
+> ✅ **Verified with the real Gemini API (25/11/2026).** A test lecture with 8 slides on the Observer pattern (`observer_lecture.mp4`, 1:48 min, no audio) was uploaded and Gemini returned an accurate summary: the WeatherStation coupling problem, Subject/Observer one-to-many, the `attach`/`notify` code example, Open/Closed vs. memory leaks, and Homework 3 – all taken from the slides, nothing invented. To try it yourself, record a minute on your phone or use any lecture MP4.
+
+### Reliability
+- **Google overloaded (503 "high demand"), 429, 500:** each model is retried after 4 s and 10 s, then the next model is used (5 models), then the whole list once more. Only if everything is busy does the page show *"Gemini servers are overloaded – upload again in a few minutes"*.
+- **Model retired (404):** the next model is used automatically.
+- **macOS "CERTIFICATE_VERIFY_FAILED":** Python from python.org has no root certificates; the client then uses `certifi` or the Mac's own `/etc/ssl/cert.pem`. Certificate checking is **never** switched off.
+- **Errors are shown, not hidden:** a failed lecture is marked *Failed* with the reason; no summary is ever invented.
+
+### Security of the API key and uploads
+| Risk | Protection |
+|---|---|
+| Key leaks to GitHub | The key lives only in `.env` (or the terminal). `.env`, `certs/` and `Claude outputs/` are in `.gitignore`; checked that the key is in no tracked file and nowhere in git history. |
+| Someone reads `.env` / source through the web server | Static files are served only from `static/`; `/../.env`, `%2e%2e` and similar paths return the home page (tested). |
+| Someone with the public link uses up the key's quota | `UploadLimiter`: 3 uploads per phone per hour, 20 per network per hour, at most 3 summaries at the same time; the instructor's computer is not limited. Free-tier keys without billing can never cost money. |
+| Huge or wrong files | Max 2 GB (100 MB via the tunnel); only `video/*` or `audio/*`; checked before the body is read; temp file deleted after the job. |
+| Malicious text in titles / AI output | Everything from the server is HTML-escaped before it is shown (`escapeDeep` in `summary.js`). |
+
+
+### What happens after you upload
+```
+Browser ──(file, streamed)──► server.py  POST /api/video/upload-file   (saved to a temp file)
+                               │ background job – the page polls /api/video/list every 3 s
+                               ├─ 1. upload to the Gemini Files API (resumable upload)
+                               ├─ 2. wait until Gemini has processed the video (state ACTIVE)
+                               ├─ 3. generateContent with a JSON schema → summary, chapters,
+                               │     key takeaways, action items, quotes, topics
+                               └─ 4. temp file deleted · summary shown · status "🤖 AI summary"
+```
+- **Language:** *Same as the lecture* (default), Hebrew or English.
+- **Chapters are clickable** – they jump the video player to that timestamp.
+- **Ask AI about this video:** the question is sent to Gemini together with the same uploaded recording, so answers come from the lecture itself, with a timestamp.
+- **Who can upload:** the instructor and the students (Student Mode, also from a phone). To protect the lecturer's API key, uploads from phones are limited to **3 per phone per hour**, 20 per network per hour, and at most 3 recordings are summarised at the same time (`UploadLimiter` in `server.py`); the instructor's own computer is not limited.
+- **Size limits:** up to 2 GB per file. Through the public `--tunnel` link Cloudflare limits uploads to **100 MB**, so upload long lectures from the instructor computer at **http://localhost:8000** (same server, no limit).
+- Processing a one-hour lecture usually takes a few minutes; you can keep using the other tabs meanwhile.
+
+### How it is tested without a key
+`tests/fake_gemini.py` is a small local server that speaks the same API as Gemini (upload, processing state, generateContent, a retired model). `TestGeminiVideoPipeline` uploads a real file through it and checks that the file arrives, that the summary is returned and that the result is not marked as demo. A second test checks that without a key the result is labelled simulated.
 
 ---
 
@@ -410,12 +503,16 @@ The system features an automated **Class Video Upload & Multi-Modal AI Summariza
 
 ```
 2nd assingment OOP/
-├── README.md                      # Complete system specification & architecture
+├── README.md                      # Problem, scope, how to run, architecture
+├── docs/                          # Design documents: tools report, SoW, SRS, use cases, components,
+│                                  #   class & sequence diagrams (Mermaid), testing strategy, conclusion
+├── tools/build_css.mjs            # Rebuilds static/css/tailwind.css (Tailwind v4, run with Node)
 ├── server.py                      # Multi-threaded zero-dependency HTTP(S) server (--https, --host, --tunnel)
 ├── certs/                         # Auto-generated self-signed HTTPS certificate (git-ignored)
 ├── tests/
-│   ├── test_app.py                # 28 unit tests (models, QR, 1 location test, one-phone lock, concurrency, API)
-│   └── load_test.py               # 150-300 simultaneous students over HTTP
+│   ├── test_app.py                # 33 unit tests (models, QR, 1 location test, one-phone lock, head count, CSV, concurrency, API, Gemini pipeline)
+│   ├── load_test.py               # 150-300 simultaneous students over HTTP
+│   └── fake_gemini.py             # Local stand-in for the Gemini API (tests run without a key)
 ├── app/
 │   ├── models/                    # Encapsulated Domain Entities
 │   │   ├── session.py             # ClassSession, CheckInAttempt, & Haversine formula
@@ -427,10 +524,11 @@ The system features an automated **Class Video Upload & Multi-Modal AI Summariza
 │   │   └── homework_review.py     # LLM code reviews, SOLID compliance, & design patterns
 │   ├── repositories/
 │   │   ├── datastore.py           # Thread-safe In-Memory Repository (lock + roster version)
-│   │   └── seed_students.py       # 120 demo students with Israeli names
+│   │   └── seed_students.py       # Class list: 104 students (Hebrew first + last names)
 │   ├── services/                  # Business Logic Layer (Single Responsibility)
 │   │   ├── attendance_service.py  # Dual-factor QR/GPS verification & audit logging
-│   │   ├── video_summary_service.py# Video ingestion, Whisper ASR, & LLM chapter synthesis
+│   │   ├── video_summary_service.py# Lecture upload → background Gemini job → summary & Q&A
+│   │   ├── gemini_client.py       # Google Gemini API client (Files API + JSON-schema output)
 │   │   ├── feedback_service.py    # Feedback stream & upvoting rules
 │   │   ├── poll_service.py        # Poll creation, state toggling, & vote recording
 │   │   ├── ml_summary_service.py  # Meeting transcript synthesis & dynamic regeneration
@@ -438,14 +536,18 @@ The system features an automated **Class Video Upload & Multi-Modal AI Summariza
 │   └── handlers/
 │       └── api_router.py          # Command / Front Controller REST API dispatcher
 └── static/                        # Frontend Single-Page Application (SPA)
-    ├── index.html                 # Modern Tailwind responsive dashboard
+    ├── index.html                 # Responsive dashboard ("engineer's notebook" theme)
+    ├── gps.html                   # Standalone location test page (/gps)
     ├── css/
-    │   └── custom.css             # Laser sweep animation, reticle box, & glassmorphism
+    │   ├── tailwind.input.css     # Theme tokens (colors, fonts) – source for tailwind.css
+    │   ├── tailwind.css           # Compiled Tailwind (works offline)
+    │   └── custom.css             # Theme: graph-paper page, ink header, highlighter, scanner
     └── js/
         ├── api.js                 # ApiClient (Facade Pattern)
         ├── state.js               # Reactive AppState (Observer) + role from ?role= URL
         ├── haversine.js           # Client-side Haversine geodesic distance calculator
         ├── qr_engine.js           # QR generation, camera decoding, token/short-code parsing
+        ├── headcount.js           # Photo head count: in-browser face detection (face-api), tiling, merge
         ├── vendor/
         │   ├── qrcode.min.js      # Local David Shim standard QR Code generator
         │   └── jsQR.min.js        # Local universal pure-CPU QR Code scanner
@@ -465,6 +567,7 @@ The system features an automated **Class Video Upload & Multi-Modal AI Summariza
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/session/active` | Active lecture session & base GPS coordinates |
+| `POST` | `/api/video/upload-file` | Upload a lecture recording (raw body, `Content-Type: video/*`, headers `X-Filename`, `X-Title`, `X-Topic`, `X-Summary-Language`) → starts the Gemini job; poll `/api/video/list` |
 | `GET` | `/api/server-info` | Address phones should use (`lan_origin`: LAN or tunnel URL) — used to build the QR |
 | `GET` | `/api/session/qr` | Active QR token, 6-char `short_code`, `is_active`, countdown seconds |
 | `POST` | `/api/session/start` | Instructor starts a session (resets the roster by default, `reset_roster`) |
@@ -483,6 +586,8 @@ The system features an automated **Class Video Upload & Multi-Modal AI Summariza
 | `GET` | `/api/video/list` | Returns library of uploaded lecture videos and summaries |
 | `GET` | `/api/video/detail?id=...` | Detailed summary, chapters, and transcript for a video |
 | `POST` | `/api/video/qa` | **Interactive AI Q&A assistant for uploaded video** |
+| `POST` | `/api/attendance/headcount` | Save a photo head count (`faces_detected`, `people_counted`) → compared with check-ins; marks nobody present |
+| `GET` | `/api/attendance/export.csv` | Attendance spreadsheet (CSV) — offline download or live link for Google Sheets `IMPORTDATA` |
 | `POST` | `/api/attendance/photo-scan` | Facial recognition simulation (API only — removed from the UI because it marks students present without a real check-in) |
 | `GET` | `/api/feedback` | Categorized student comments and questions |
 | `POST` | `/api/feedback` | Submits new live/offline question |

@@ -6,11 +6,35 @@ Zero-dependency standard library Python HTTP Server.
 Integrates static file hosting and modular REST API routing.
 """
 import os
+import threading
 import sys
 import json
 import mimetypes
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
+
+
+
+def _load_dotenv(path=os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")):
+    """Read KEY=value lines from a local .env file (git-ignored) into the environment.
+    Lets the lecturer keep GEMINI_API_KEY in .env instead of typing `export` every time.
+    A variable that is already set in the terminal wins."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.replace("export ", "").strip()
+                value = value.strip().strip('"').strip("'")
+                if key and not os.environ.get(key):
+                    os.environ[key] = value
+    except FileNotFoundError:
+        pass
+
+
+_load_dotenv()
 
 from app.handlers.api_router import ApiRouter
 
@@ -36,6 +60,50 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
         super().handle_error(request, client_address)
 
 
+class UploadLimiter:
+    """
+    Limits lecture uploads from phones / the public link (the instructor's own computer is not limited):
+      • each device (cookie)      – PER_DEVICE uploads per hour
+      • each network address      – PER_IP uploads per hour (a whole class can share one campus IP)
+      • whole server              – at most MAX_PROCESSING recordings being summarised at the same time
+    """
+    PER_DEVICE = 3
+    PER_IP = 20
+    MAX_PROCESSING = 3
+    WINDOW = 3600  # seconds
+    _log = {}      # key -> [timestamps]
+    _lock = threading.Lock()
+
+    @classmethod
+    def _recent(cls, key, now):
+        stamps = [t for t in cls._log.get(key, []) if now - t < cls.WINDOW]
+        cls._log[key] = stamps
+        return stamps
+
+    @classmethod
+    def check(cls, handler):
+        """Returns None if the upload may start (and records it), otherwise a readable reason."""
+        import time
+        if handler._is_local_request():
+            return None
+        try:
+            busy = sum(1 for v in handler.router._video_service.get_all_videos() if v.get("status") == "processing")
+        except Exception:
+            busy = 0
+        if busy >= cls.MAX_PROCESSING:
+            return f"{busy} recordings are being summarised right now. Please try again in a few minutes."
+        now = time.time()
+        with cls._lock:
+            dev_key, ip_key = "dev:" + handler._device_cookie(), "ip:" + handler._client_ip()
+            if len(cls._recent(dev_key, now)) >= cls.PER_DEVICE:
+                return f"Upload limit reached: {cls.PER_DEVICE} recordings per hour from each phone. Try again later."
+            if len(cls._recent(ip_key, now)) >= cls.PER_IP:
+                return "Too many uploads from this network in the last hour. Try again later."
+            cls._log[dev_key].append(now)
+            cls._log[ip_key].append(now)
+        return None
+
+
 class ClassroomRequestHandler(BaseHTTPRequestHandler):
     """
     HTTP Request Handler following the Front Controller Pattern.
@@ -47,6 +115,12 @@ class ClassroomRequestHandler(BaseHTTPRequestHandler):
     timeout = 30       # seconds; an idle/half-open connection can never block the server
 
     DEVICE_COOKIE = "cs302_device"
+
+    def _is_local_request(self) -> bool:
+        """True only for a browser on this computer (localhost), not via the tunnel or the Wi-Fi."""
+        if any(self.headers.get(h) for h in ("CF-Connecting-IP", "X-Forwarded-For", "X-Real-IP")):
+            return False
+        return self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
     def _client_ip(self) -> str:
         """Real client address (Cloudflare tunnel / proxies put it in a header)."""
@@ -119,7 +193,85 @@ class ClassroomRequestHandler(BaseHTTPRequestHandler):
         else:
             self.send_error(405, "Method Not Allowed")
 
+    def _json_reply(self, status: int, data: dict):
+        payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self._send_cors_headers()
+        self.end_headers()
+        self.wfile.write(payload)
+
+    MAX_VIDEO_BYTES = 2 * 1024 ** 3  # Gemini Files API free-tier limit per file
+
+    def _receive_video_upload(self):
+        """
+        POST /api/video/upload-file – raw video bytes in the body (not JSON), metadata in headers.
+        Streams to a temporary file (1 MB chunks) and starts the background summary job.
+        """
+        import tempfile
+        from urllib.parse import unquote
+        # Security: recordings go to Gemini with the lecturer's API key. Students may upload too,
+        # but with limits, so one person (or a stranger with the link) can't use up the key's quota.
+        # Checked before a single byte of the file is read.
+        refusal = UploadLimiter.check(self)
+        if refusal:
+            return self._json_reply(429, {"error": refusal})
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length <= 0:
+            return self._json_reply(400, {"success": False, "error": "No video data received."})
+        if length > self.MAX_VIDEO_BYTES:
+            # drain nothing – just refuse (the client sees the error)
+            return self._json_reply(413, {"success": False, "error": "The video is larger than 2 GB (Gemini free-tier limit)."})
+
+        filename = unquote(self.headers.get("X-Filename", "lecture.mp4"))[:200] or "lecture.mp4"
+        mime = self.headers.get("Content-Type", "video/mp4").split(";")[0].strip() or "video/mp4"
+        if not mime.startswith(("video/", "audio/")):
+            return self._json_reply(415, {"success": False, "error": "Please upload a video (or audio) file."})
+        suffix = os.path.splitext(filename)[1][:10] or ".mp4"
+        fd, tmp_path = tempfile.mkstemp(prefix="lecture_", suffix=suffix)
+        remaining = length
+        try:
+            with os.fdopen(fd, "wb") as out:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    remaining -= len(chunk)
+        except (ConnectionError, TimeoutError, OSError):
+            remaining = -1
+        if remaining != 0:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            return self._json_reply(400, {"success": False, "error": "The upload was interrupted – try again."})
+
+        video = self.router._video_service.start_video_job(
+            tmp_path, filename, length / (1024 * 1024),
+            title=unquote(self.headers.get("X-Title", "")), topic=unquote(self.headers.get("X-Topic", "")),
+            language=self.headers.get("X-Summary-Language", "auto"), mime_type=mime)
+        return self._json_reply(200, {"success": True, "video": video})
+
     def _handle_api(self, method: str):
+        if method == "POST" and self.path.split("?")[0].rstrip("/") == "/api/video/upload-file":
+            return self._receive_video_upload()
+        if self.path.split("?")[0].rstrip("/") == "/api/attendance/export.csv":
+            # Live spreadsheet: =IMPORTDATA("<public link>/api/attendance/export.csv") in Google Sheets
+            payload = self.router._attendance_service.export_csv().encode("utf-8-sig")  # BOM: Excel shows Hebrew correctly
+            self.send_response(200)
+            self.send_header("Content-Type", "text/csv; charset=utf-8")
+            self.send_header("Content-Disposition", 'inline; filename="attendance.csv"')
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(payload)))
+            self._send_cors_headers()
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if self.path.split("?")[0].rstrip("/") == "/api/server-info":
             payload = json.dumps({"lan_origin": self.lan_origin, "mode": self.server_mode}).encode("utf-8")
             self.send_response(200)
@@ -154,7 +306,7 @@ class ClassroomRequestHandler(BaseHTTPRequestHandler):
         file_path = os.path.normpath(os.path.join(STATIC_DIR, clean_path))
 
         # Security check: prevent directory traversal
-        if not file_path.startswith(STATIC_DIR) or not os.path.exists(file_path) or os.path.isdir(file_path):
+        if os.path.commonpath([file_path, STATIC_DIR]) != STATIC_DIR or not os.path.exists(file_path) or os.path.isdir(file_path):
             # Fallback to index.html for client-side routing if requested path isn't a direct asset
             fallback_index = os.path.join(STATIC_DIR, "index.html")
             if os.path.exists(fallback_index) and not clean_path.startswith("api/"):
@@ -302,6 +454,14 @@ def detect_public_ips() -> list:
     return found
 
 
+def llm_banner() -> str:
+    from app.services.gemini_client import GeminiClient
+    gc = GeminiClient()
+    if gc.enabled:
+        return f"🤖 Video summaries: REAL – Google Gemini (tries {gc.models[0]} first)"
+    return "⚪ Video summaries: DEMO MODE (simulated). Set GEMINI_API_KEY to summarise real recordings."
+
+
 def run(host: str = "127.0.0.1", port: int = 8000, use_https: bool = False, use_tunnel: bool = False):
     server_address = (host, port)
     try:
@@ -341,6 +501,7 @@ def run(host: str = "127.0.0.1", port: int = 8000, use_https: bool = False, use_
         ClassroomRequestHandler.server_mode = "tunnel"
         print("=" * 70)
         print("🎓 CS302 Interactive Classroom Suite — PUBLIC LINK READY")
+        print(llm_banner())
         print("")
         print("   Open these addresses on ANY device (laptop, phones, Wi-Fi or mobile data):")
         print(f"   👨‍🏫 Instructor:  {tunnel_url}/?role=instructor")
@@ -361,6 +522,7 @@ def run(host: str = "127.0.0.1", port: int = 8000, use_https: bool = False, use_
 
     print("=" * 70)
     print("🎓 CS302 Interactive Classroom Suite (Ex2 OOP Assignment)")
+    print(llm_banner())
     print(f"🚀 Server running at: {scheme}://localhost:{port}/")
     if host in ("0.0.0.0", "") or host == lan_ip:
         print(f"📱 From a phone on the same Wi-Fi: {scheme}://{lan_ip}:{port}/?role=student")

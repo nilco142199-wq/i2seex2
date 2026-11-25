@@ -51,9 +51,9 @@ class MLSummaryService:
             ],
             transcript_snippets=[
                 TranscriptSnippet("00:03:15", "Dr. Avi Ben-David", f"Today we focus specifically on {topic_clean} and its impact on maintainability.", highlight=True),
-                TranscriptSnippet("00:15:22", "Yonatan Levi", "Can we apply this pattern in both statically and dynamically typed languages?", highlight=False),
+                TranscriptSnippet("00:15:22", "ליאל אבידור", "Can we apply this pattern in both statically and dynamically typed languages?", highlight=False),
                 TranscriptSnippet("00:15:40", "Dr. Avi Ben-David", "Yes! The behavioral contract remains identical regardless of compile-time typing.", highlight=True),
-                TranscriptSnippet("00:32:05", "Omer Biton", "How does this affect unit test isolation with mock objects?", highlight=False),
+                TranscriptSnippet("00:32:05", "נועם יעקב אוחיון", "How does this affect unit test isolation with mock objects?", highlight=False),
                 TranscriptSnippet("00:32:30", "Dr. Avi Ben-David", "It makes isolation straightforward because dependencies can be mocked via simple stubs.", highlight=True)
             ],
             topics=[topic_clean, "Loose Coupling", "Design Patterns", "Clean Code", "OOP Architecture"],

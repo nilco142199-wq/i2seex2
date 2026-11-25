@@ -44,8 +44,9 @@ class VideoLecture:
         transcript_snippets: List[TranscriptSnippet],
         topics: List[str],
         ai_model: str = "Whisper ASR + Gemini 1.5 Video LLM",
-        engagement_score: float = 93.5,
-        status: str = "completed"
+        engagement_score: Optional[float] = 93.5,
+        status: str = "completed",
+        simulated: bool = True
     ):
         self.video_id = video_id
         self.title = title
@@ -61,7 +62,13 @@ class VideoLecture:
         self.topics = topics
         self.ai_model = ai_model
         self.engagement_score = engagement_score
-        self.status = status
+        self.status = status            # "processing" | "completed" | "failed"
+        self.simulated = simulated      # True = demo content, NOT produced by a model
+        self.stage = ""                 # human-readable progress while processing
+        self.error: Optional[str] = None
+        self.gemini_file_uri: Optional[str] = None   # kept for real Q&A (Gemini keeps files ~48 h)
+        self.mime_type = "video/mp4"
+        self.summary_language = "auto"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -79,5 +86,9 @@ class VideoLecture:
             "topics": self.topics,
             "ai_model": self.ai_model,
             "engagement_score": self.engagement_score,
-            "status": self.status
+            "status": self.status,
+            "simulated": self.simulated,
+            "stage": self.stage,
+            "error": self.error,
+            "qa_available": bool(self.gemini_file_uri),
         }

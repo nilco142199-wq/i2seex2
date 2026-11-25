@@ -5,11 +5,14 @@ multi-modal LLM chapter indexing, and automated lecture synthesis.
 """
 from typing import Dict, Any, List, Optional
 from datetime import datetime
+import os
 import random
+import threading
 import uuid
 
 from app.models.video_summary import VideoLecture, VideoChapter
 from app.models.meeting_summary import ActionItem, TranscriptSnippet
+from app.services.gemini_client import GeminiClient, GeminiError
 
 
 class VideoSummaryService:
@@ -17,9 +20,92 @@ class VideoSummaryService:
     Manages video recordings, multi-modal LLM processing pipelines,
     and chapter-indexed lecture summaries.
     """
-    def __init__(self):
+    def __init__(self, gemini: Optional[GeminiClient] = None):
         self._videos: Dict[str, VideoLecture] = {}
+        self._gemini = gemini or GeminiClient()
+        self._lock = threading.Lock()
         self._seed_default_videos()
+
+    # ------------------------------------------------------------------ real LLM pipeline
+    def llm_status(self) -> Dict[str, Any]:
+        """Shown in the UI so it is always clear whether summaries come from a real model."""
+        return {
+            "enabled": self._gemini.enabled,
+            "provider": "Google Gemini" if self._gemini.enabled else None,
+            "models": self._gemini.models,
+            "hint": None if self._gemini.enabled else
+                    "Set GEMINI_API_KEY before starting the server to summarise real recordings with Gemini.",
+        }
+
+    def start_video_job(self, file_path: str, filename: str, filesize_mb: float, title: str = "",
+                        topic: str = "", language: str = "auto", mime_type: str = "video/mp4") -> Dict[str, Any]:
+        """
+        Registers the uploaded recording and processes it in a background thread:
+        upload to Gemini → wait until processed → summarise. The browser polls /api/video/detail.
+        Without an API key the recording is NOT analysed and a clearly-labelled demo summary is returned.
+        """
+        if not self._gemini.enabled:
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
+            video = self.process_uploaded_video(filename, filesize_mb, title, topic)
+            return video
+
+        video_id = f"vid-{uuid.uuid4().hex[:6]}"
+        clean_title = (title or os.path.splitext(filename)[0].replace("_", " ")).strip()
+        lecture = VideoLecture(
+            video_id=video_id, title=clean_title or "Class recording", filename=filename,
+            filesize_mb=round(float(filesize_mb), 1), duration="—", upload_time="Just now",
+            executive_summary="", chapters=[], key_takeaways=[], action_items=[], transcript_snippets=[],
+            topics=[], ai_model="Google Gemini", engagement_score=None, status="processing", simulated=False,
+        )
+        lecture.stage = "Uploading the recording to Gemini…"
+        lecture.mime_type = mime_type or "video/mp4"
+        lecture.summary_language = language
+        with self._lock:
+            self._videos[video_id] = lecture
+        threading.Thread(target=self._run_job, args=(lecture, file_path, title, topic, language), daemon=True).start()
+        return lecture.to_dict()
+
+    def _run_job(self, lecture: VideoLecture, file_path: str, title: str, topic: str, language: str) -> None:
+        try:
+            info = self._gemini.upload_file(file_path, lecture.mime_type, lecture.filename)
+            lecture.stage = "Gemini is processing the video (picture + sound)…"
+            info = self._gemini.wait_until_active(
+                info, on_poll=lambda state: setattr(lecture, "stage", f"Gemini is processing the video… ({state.lower()})"))
+            lecture.gemini_file_uri = info["uri"]
+            lecture.mime_type = info.get("mimeType", lecture.mime_type)
+            lecture.stage = "Gemini is watching the lecture and writing the summary…"
+            result = self._gemini.summarize_lecture(info, title, topic, language)
+            self._apply_summary(lecture, result, title)
+            lecture.ai_model = f"Google Gemini ({self._gemini.last_model_used})"
+            lecture.status, lecture.stage = "completed", ""
+        except GeminiError as e:
+            lecture.status, lecture.error, lecture.stage = "failed", str(e), ""
+        except Exception as e:  # never leave a job stuck in "processing"
+            lecture.status, lecture.error, lecture.stage = "failed", f"Unexpected error: {e}", ""
+        finally:
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
+
+    @staticmethod
+    def _apply_summary(lecture: VideoLecture, r: Dict[str, Any], title_hint: str) -> None:
+        lecture.title = (title_hint or r.get("title") or lecture.title).strip()
+        lecture.duration = r.get("duration") or lecture.duration
+        lecture.executive_summary = r.get("executive_summary", "").strip()
+        lecture.chapters = [VideoChapter(c.get("timestamp", ""), c.get("title", ""), c.get("description", ""))
+                            for c in r.get("chapters", []) if c.get("title")]
+        lecture.key_takeaways = [t for t in r.get("key_takeaways", []) if t]
+        lecture.action_items = [ActionItem(a.get("task", ""), a.get("assignee") or "All students",
+                                           a.get("due_date") or "—", "pending")
+                                for a in r.get("action_items", []) if a.get("task")]
+        lecture.transcript_snippets = [
+            TranscriptSnippet(h.get("timestamp", ""), h.get("speaker") or "Lecturer", h.get("text", ""), i == 0)
+            for i, h in enumerate(r.get("transcript_highlights", [])) if h.get("text")]
+        lecture.topics = [t.lstrip("#") for t in r.get("topics", []) if t]
 
     def _seed_default_videos(self):
         # Seed Lecture 1
@@ -56,13 +142,13 @@ class VideoSummaryService:
             ],
             transcript_snippets=[
                 TranscriptSnippet("14:25", "Dr. Avi Ben-David", "Notice how the Subject never depends on concrete observer implementations.", highlight=True),
-                TranscriptSnippet("32:10", "Noa Cohen", "Does the push model pass the whole payload or just the event ID?", highlight=False),
+                TranscriptSnippet("32:10", "גיא אביב", "Does the push model pass the whole payload or just the event ID?", highlight=False),
                 TranscriptSnippet("32:30", "Dr. Avi Ben-David", "Passing a granular event object gives the observer flexibility without tight coupling.", highlight=True),
-                TranscriptSnippet("54:15", "Tamar Peretz", "How do we prevent memory leaks if an observer isn't unregistered?", highlight=False),
+                TranscriptSnippet("54:15", "דניאל שלמה אהרן", "How do we prevent memory leaks if an observer isn't unregistered?", highlight=False),
                 TranscriptSnippet("54:40", "Dr. Avi Ben-David", "By utilizing weak references or an explicit disposable lifecycle pattern.", highlight=True)
             ],
             topics=["Observer Pattern", "Strategy Pattern", "SOLID Principles", "Refactoring", "Loose Coupling"],
-            ai_model="Whisper-Large-v3 + Gemini 1.5 Pro Video LLM",
+            ai_model="Demo example (simulated – no model)",
             engagement_score=94.5,
             status="completed"
         )
@@ -98,7 +184,7 @@ class VideoSummaryService:
                 TranscriptSnippet("19:05", "Dr. Avi Ben-David", "If a class handles both persistence and HTTP formatting, it violates SRP.", highlight=True)
             ],
             topics=["Clean Architecture", "SOLID Rubric", "Refactoring", "Code Smells"],
-            ai_model="Whisper-Large-v3 + Gemini 1.5 Pro Video LLM",
+            ai_model="Demo example (simulated – no model)",
             engagement_score=91.0,
             status="completed"
         )
@@ -121,7 +207,9 @@ class VideoSummaryService:
         topic: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Simulates end-to-end multi-modal LLM ingestion:
+        DEMO MODE ONLY (no GEMINI_API_KEY): returns a template summary – the recording is NOT analysed.
+        The result is flagged simulated=True and labelled in the UI.
+        Originally simulated end-to-end multi-modal LLM ingestion:
         1. Audio extraction & Whisper speech-to-text transcript generation.
         2. Visual keyframe & slide OCR analysis.
         3. Gemini LLM chapter indexing, executive summary, and action item extraction.
@@ -139,7 +227,8 @@ class VideoSummaryService:
             duration=f"{random.randint(45, 95)}m {random.randint(10, 59)}s",
             upload_time="Just now",
             executive_summary=(
-                f"Automated AI synthesis for uploaded recording '{clean_name}'. "
+                f"⚠️ DEMO MODE – this recording was NOT analysed (no GEMINI_API_KEY configured). "
+                f"Template text for '{clean_name}'. "
                 f"The lecture delivered a deep exploration of '{topic_clean}', examining design trade-offs, "
                 f"architectural constraints, and SOLID principles. Multi-modal frame analysis identified "
                 f"several UML diagram slides and live terminal refactoring demonstrations."
@@ -167,7 +256,7 @@ class VideoSummaryService:
                 TranscriptSnippet("30:10", "Dr. Avi Ben-David", "Notice on this slide how the abstraction insulates the client code.", highlight=True)
             ],
             topics=[topic_clean, "Design Patterns", "Clean Architecture", "OOP Principles"],
-            ai_model="Whisper-Large-v3 + Gemini 1.5 Pro Video LLM",
+            ai_model="Demo example (simulated – no model)",
             engagement_score=round(random.uniform(90.0, 97.5), 1),
             status="completed"
         )
@@ -183,6 +272,17 @@ class VideoSummaryService:
         video = self._videos.get(video_id)
         if not video:
             return {"error": "Video not found."}
+
+        if video.gemini_file_uri and self._gemini.enabled and question.strip():
+            try:
+                res = self._gemini.ask_about_lecture(video.gemini_file_uri, video.mime_type, question.strip())
+                return {"success": True, "video_id": video_id, "question": question,
+                        "answer": res.get("answer", ""), "timestamp": res.get("timestamp", ""),
+                        "ai_model": f"Google Gemini ({self._gemini.last_model_used})", "simulated": False}
+            except GeminiError as e:
+                return {"success": False, "video_id": video_id, "question": question,
+                        "answer": f"Gemini could not answer: {e}", "timestamp": "", "ai_model": video.ai_model,
+                        "simulated": False}
 
         q = question.lower()
         if "deadline" in q or "due" in q or "homework" in q:
@@ -204,5 +304,6 @@ class VideoSummaryService:
             "question": question,
             "answer": answer,
             "timestamp": timestamp,
-            "ai_model": video.ai_model
+            "ai_model": video.ai_model,
+            "simulated": True
         }

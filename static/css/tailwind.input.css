@@ -1,0 +1,79 @@
+/*
+ * Tailwind source for the local build (static/css/tailwind.css).
+ * Rebuild after changing classes:  node tools/build_css.mjs . static/css/tailwind.css
+ *
+ * Theme: "engineer's notebook" – graph paper, blueprint ink, highlighter.
+ * The existing markup uses Tailwind's indigo / slate / emerald / amber names;
+ * here those names are re-pointed to the project palette, so every screen is
+ * restyled without touching the components' logic.
+ */
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Rubik", "Segoe UI", system-ui, -apple-system, "Noto Sans Hebrew", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Blueprint – primary actions & links (was indigo) */
+  --color-indigo-50: #eef3ff;
+  --color-indigo-100: #dce6ff;
+  --color-indigo-200: #bacdff;
+  --color-indigo-300: #8faeff;
+  --color-indigo-400: #5f86f5;
+  --color-indigo-500: #3d68ee;
+  --color-indigo-600: #2a52d9;
+  --color-indigo-700: #2142b3;
+  --color-indigo-800: #1d378c;
+  --color-indigo-900: #1b2f6b;
+  --color-indigo-950: #16233f;
+
+  /* Ink – text, borders, surfaces (was slate) */
+  --color-slate-50: #f4f6fb;
+  --color-slate-100: #eaeef6;
+  --color-slate-200: #d9dfeb;
+  --color-slate-300: #bac3d5;
+  --color-slate-400: #8892a9;
+  --color-slate-500: #626c84;
+  --color-slate-600: #4a5470;
+  --color-slate-700: #36405a;
+  --color-slate-800: #243049;
+  --color-slate-900: #16233f;
+  --color-slate-950: #0e1830;
+
+  /* Signal teal – present / success (was emerald) */
+  --color-emerald-50: #e8faf6;
+  --color-emerald-100: #c9f2e9;
+  --color-emerald-200: #97e4d3;
+  --color-emerald-300: #5acfb8;
+  --color-emerald-400: #27b79c;
+  --color-emerald-500: #0e9f8e;
+  --color-emerald-600: #0b8577;
+  --color-emerald-700: #0b6a60;
+  --color-emerald-800: #0c544d;
+  --color-emerald-900: #0b4540;
+
+  /* Highlighter – live / attention (was amber) */
+  --color-amber-50: #fffbe0;
+  --color-amber-100: #fff4b8;
+  --color-amber-200: #ffea80;
+  --color-amber-300: #ffe14d;
+  --color-amber-400: #f5cf1f;
+  --color-amber-500: #e0b400;
+  --color-amber-600: #b88e00;
+  --color-amber-700: #8c6a00;
+  --color-amber-800: #6b5100;
+  --color-amber-900: #574200;
+
+  /* Project tokens */
+  --color-ink: #16233f;
+  --color-paper: #f4f6fb;
+  --color-blueprint: #2a52d9;
+  --color-highlighter: #ffe14d;
+  --color-signal: #0e9f8e;
+}
+
+/* Tailwind v3 → v4 compatibility (the markup was written for v3 defaults) */
+@layer base {
+  *, ::after, ::before, ::backdrop, ::file-selector-button { border-color: var(--color-slate-200, currentColor); }
+  button:not(:disabled), [role="button"]:not(:disabled) { cursor: pointer; }
+  input::placeholder, textarea::placeholder { color: var(--color-slate-400); }
+}
